@@ -57,6 +57,31 @@ get_stories() {
   eval "${CMD[@]}" "$*"
 }
 
+process_parallel() {
+  # We need a lockfile for writing to output otherwise xargs may behave in a
+  # non-deterministic way due to parallel processing
+  LOCKFILE="$(mktemp)"
+  #shellcheck disable=SC2064
+  trap "rm -rf $LOCKFILE" EXIT TERM RETURN
+
+  # Note that the use of `bash -c` actually puts the first argument in $0
+  # rather than $1 (which is normally) reserved for the name of the script. So
+  # below we have to explicitly include $0 otherwise, the first argument will
+  # be ignored :/
+
+  #shellcheck disable=SC2016
+  xargs -0 -n 16 -P 0 bash -c '
+    {
+      OUTPUT="$(jq '"$*"' "$0" $*)"
+      flock -x 9
+      printf "%s\n" "$OUTPUT"
+    } 9>'"$LOCKFILE"
+}
+
+process_stories() {
+  get_stories "-print0" "|" "process_parallel ${*@Q}"
+}
+
 compute_sum() {
   paste -sd+ - | bc
 }
@@ -172,19 +197,19 @@ EOF
 
 NUM_STORIES="$(get_stories | wc -l)"
 echo "$NUM_STORIES" | write_stats "stories"
-get_stories "-exec" "jq" "'.scenes | map(select(.is_final == true and .is_ended == true)) | length'" "{}" "\\+" | compute_sum | write_stats "completed stories" &
-get_stories "-exec" "jq" "'.scenes[].entries[].user_pid'" "{}" "\\+" | sort | uniq | wc -l | write_stats "users" &
-get_stories "-exec" "jq" "'.characters | length'" "{}" "\\+" | compute_stats | write_stats "characters created" &
+process_stories "'.scenes | map(select(.is_final == true and .is_ended == true)) | length'" | compute_sum | write_stats "completed stories"
+process_stories "'.scenes[].entries[].user_pid'" | sort | uniq | wc -l | write_stats "users"
+process_stories "'.characters | length'" | compute_stats | write_stats "characters created"
 
 compute_player_stats () {
-  PLAYED_CHARACTERS="$(get_stories "-exec" "jq" "'[.scenes[].entries[].character_seq_id | values] | unique | length'" "{}" "\\+" | compute_stats)"
+  PLAYED_CHARACTERS="$(process_stories "'[.scenes[].entries[].character_seq_id | values] | unique | length'" | compute_stats)"
   echo "$PLAYED_CHARACTERS" | write_stats "characters played"
   echo "$((NUM_STORIES + $(extract_total "$PLAYED_CHARACTERS")))" | write_stats "total played roles"
 }
 
-compute_player_stats &
-get_stories "-exec" "jq" "'.scenes | length'" "{}" "\\+" | compute_stats | write_stats "scenes" &
-get_stories "-exec" "jq" "'.scenes[].entries | length'" "{}" "\\+" | compute_stats_and_plot "Entries per Scene" | write_stats "scene entries" &
+compute_player_stats
+process_stories "'.scenes | length'" | compute_stats | write_stats "scenes"
+process_stories "'.scenes[].entries | length'" | compute_stats_and_plot "Entries per Scene" | write_stats "scene entries"
 
 BOOL2INT='def bool2int: if . == true then 1 else 0 end'
 #shellcheck disable=SC2016
@@ -192,15 +217,15 @@ USER_PIDS='(reduce {(.details.narrator_user_pid, .characters[].user_pid): true} 
 PLAYED_CARDS='(.scenes[].entries[].place_card, .scenes[].entries[].challenge_cards[], .scenes[].entries[].cards_played_on_challenge[])'
 #shellcheck disable=SC2016
 IS_USER_CREATED='select(.is_wild == false) | [(((.author_user_pid | select(. != null)) | in($users)), (.is_edited | select(. == true)))] | any | bool2int'
-get_stories "-exec" "jq" "'$BOOL2INT; $USER_PIDS | [.cards[] | $IS_USER_CREATED] | add'" "{}" "\\+" | compute_stats_and_plot "Cards Created/Edited per Story" | write_stats "cards created/edited" &
-get_stories "-exec" "jq" "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | add'" "{}" "\\+" | compute_stats_and_plot "Played Cards Created/Edited per Story" | write_stats "played cards created/edited by users" &
+process_stories "'$BOOL2INT; $USER_PIDS | [.cards[] | $IS_USER_CREATED] | add'" | compute_stats_and_plot "Cards Created/Edited per Story" | write_stats "cards created/edited"
+process_stories "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | add'" | compute_stats_and_plot "Played Cards Created/Edited per Story" | write_stats "played cards created/edited by users"
 
-get_stories "-exec" "jq" "'.scenes[].entries | map(select(.place_card != null)) | length'" "{}" "\\+" | compute_stats | write_stats "location cards played by narrators" &
-get_stories "-exec" "jq" "'.scenes[].entries[].challenge_cards | length'" "{}" "\\+" | compute_stats_and_plot "Challenge Cards per Entry" | write_stats "challenge cards played by narrators" &
-get_stories "-exec" "jq" "'.scenes[].entries[].cards_played_on_challenge | length'" "{}" "\\+" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters" &
-get_stories "-exec" "jq" "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for == \"new\")) | length'" "{}" "\\+" | compute_stats_and_plot "Played Wild Cards per Entry" | write_stats "wild cards played by characters" &
-get_stories "-exec" "jq" "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for != \"new\")) | length'" "{}" "\\+" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters" &
-get_stories "-exec" "jq" "'[.scenes[].entries[].cards_played_on_challenge | length] | add | select(. == 0)'" "{}" "\\+" | wc -l | write_stats "stories played without cards" &
+process_stories "'.scenes[].entries | map(select(.place_card != null)) | length'" | compute_stats | write_stats "location cards played by narrators"
+process_stories "'.scenes[].entries[].challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" | write_stats "challenge cards played by narrators"
+process_stories "'.scenes[].entries[].cards_played_on_challenge | length'" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters"
+process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" | write_stats "wild cards played by characters"
+process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for != \"new\")) | length'" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters"
+process_stories "'[.scenes[].entries[].cards_played_on_challenge | length] | add | select(. == 0)'" | wc -l | write_stats "stories played without cards"
 
 CHARACTERS='.characters[].description'
 SCENES='.scenes[].entries[].description'
@@ -212,15 +237,14 @@ REGULAR_CARDS='.scenes[].entries[].cards_played_on_challenge | map(select(.via_w
 # Very simple tokenizer, equivalent to https://www.nltk.org/api/nltk.tokenize.html#nltk.tokenize.regexp.WordPunctTokenizer
 TOKENIZER='select(. != null) | match("\\w+|[^\\w\\s]+"; "g") | .string'
 
-get_stories "-exec" "jq" "'$CHARACTERS | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Character Description" | write_stats "tokens in character descriptions" &
-get_stories "-exec" "jq" "'$SCENES | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Scene Entry" | write_stats "tokens in scene entries" &
-get_stories "-exec" "jq" "'$LOCATIONS | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Played Location Card" | write_stats "tokens in played location cards" &
-get_stories "-exec" "jq" "'$CHALLENGES | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Played Challenge Card" | write_stats "tokens in played challenge cards" &
-get_stories "-exec" "jq" "'$REGULAR_CARDS | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Played Regular Card" | write_stats "tokens in played regular cards" &
-get_stories "-exec" "jq" "'$WILD_CARDS | [$TOKENIZER] | length'" "{}" "\\+" | compute_stats_and_plot "Tokens per Played Wild Card" | write_stats "tokens in played wild cards" &
+process_stories "'$CHARACTERS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Character Description" | write_stats "tokens in character descriptions"
+process_stories "'$SCENES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Scene Entry" | write_stats "tokens in scene entries"
+process_stories "'$LOCATIONS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Location Card" | write_stats "tokens in played location cards"
+process_stories "'$CHALLENGES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Challenge Card" | write_stats "tokens in played challenge cards"
+process_stories "'$REGULAR_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Regular Card" | write_stats "tokens in played regular cards"
+process_stories "'$WILD_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Wild Card" | write_stats "tokens in played wild cards"
 
-get_stories "-exec" "jq" "-r" "'$CHARACTERS, $SCENES, $LOCATIONS, $CHALLENGES | $TOKENIZER'" "{}" "\\+" | \
-  awk -F '\n' '{for(i = 1; i <= NF; i++) {a[$i]++}} END {for(k in a) print  k, a[k]}' | wc -l | write_stats "unique tokens" &
+process_stories "-r" "'$CHARACTERS, $SCENES, $LOCATIONS, $CHALLENGES | $TOKENIZER'" | \
+  awk -F '\n' '{for(i = 1; i <= NF; i++) {a[$i]++}} END {for(k in a) print  k, a[k]}' | wc -l | write_stats "unique tokens"
 
-wait
 stats_footer

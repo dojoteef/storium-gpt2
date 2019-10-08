@@ -152,7 +152,7 @@ extract_entry() {
     done
 
     for ((i=0; i < MAX_HAND_CARDS; i++)); do
-      CARD_ID="$(jq -r "$HAND_CONTEXT[${i}].card_id" "$FILENAME")"
+      CARD_ID="$(jq -r "${HAND_CONTEXT[${i}]}.card_id" "$FILENAME")"
       CARD_NAME="$(jq -r ".cards[] | select(.card_id == \"$CARD_ID\") | .name" "$FILENAME")"
       CSV_ENTRY+=",$(csv_escape "$CARD_NAME")"
 

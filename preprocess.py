@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from itertools import chain
 
 from pydantic import BaseModel
+from transformers import PreTrainedTokenizer
 
 
 ###############################################################################
@@ -57,13 +58,6 @@ class SpecialTokens(str, Enum):
     failure_stakes = auto()
     success_stakes = auto()
 
-    @classmethod
-    def as_dict(cls):
-        """
-        Return a dictionary of enumeration name to its string representation
-        """
-        return {k: str(v) for k, v in cls.__members__.items()}
-
     def __str__(self):
         """
         Override the default string method to return the enumeration value,
@@ -77,7 +71,7 @@ class CharacterInfo(BaseModel):
     The processed character info
     """
 
-    summary: str
+    summary: List[str]
     character_id: str
 
     # This is a sorted list of entry ids written by the character to
@@ -103,22 +97,10 @@ class EntryInfo(BaseModel):
     The processed entry info
     """
 
-    text: str
     entry_id: str
 
-    summary: str
-    character_id: str
-
-
-class CardInfo(BaseModel):
-    """
-    The processed card info
-    """
-
-    text: str
-    entry_id: str
-
-    summary: str
+    text: List[str]
+    summary: List[str]
     character_id: str
 
 
@@ -142,7 +124,9 @@ def extract_string(field: str, mapping: Dict[str, Any]) -> str:
     return mapping.get(field, SpecialTokens.missing) or SpecialTokens.missing
 
 
-def summarize_character(character: Dict[str, Any], max_length: int = 100) -> str:
+def summarize_character(
+    character: Dict[str, Any], max_length: int = 100, *, tokenizer: PreTrainedTokenizer
+) -> List[str]:
     """
     Create the summary for a character
 
@@ -151,24 +135,39 @@ def summarize_character(character: Dict[str, Any], max_length: int = 100) -> str
     """
     strings: List[str] = [SpecialTokens.character]
     if character:
-        strings.extend(extract_string("name", character).split())
-        strings.extend(extract_string("description", character).split())
+        strings.append(extract_string("name", character))
+        strings.append(extract_string("description", character))
     else:
         strings.append(SpecialTokens.missing)
 
-    return " ".join(strings[:max_length])
+    tokens = tokenizer.tokenize(" ".join(strings))
+    return tokens[:max_length]
 
 
-def summarize_cards(cards: List[Dict[str, Any]]) -> str:
+def summarize_cards(
+    cards: List[Dict[str, Any]], *, tokenizer: PreTrainedTokenizer
+) -> List[str]:
     """
     Create the summary of a card
     """
-    return " ".join([summarize_card(card) for card in cards])
+    return list(
+        chain.from_iterable(
+            [summarize_card(card, tokenizer=tokenizer) for card in cards]
+        )
+    )
 
 
-def summarize_card(card: Optional[Dict[str, Any]]) -> str:
+def summarize_card(
+    card: Optional[Dict[str, Any]],
+    max_length: int = 100,
+    *,
+    tokenizer: PreTrainedTokenizer,
+) -> List[str]:
     """
     Create the summary of a card
+
+    NOTE: The default max_length parameter was chosen empirically to make the
+    context size less than half the max length supported by GPT-2 (1024).
     """
     strings: List[str] = [SpecialTokens.card]
     if card:
@@ -177,12 +176,16 @@ def summarize_card(card: Optional[Dict[str, Any]]) -> str:
     else:
         strings.append(SpecialTokens.missing)
 
-    return " ".join(strings)
+    tokens = tokenizer.tokenize(" ".join(strings))
+    return tokens[:max_length]
 
 
 def summarize_challenge(
-    challenge: Optional[Dict[str, Any]], max_length: int = 100
-) -> str:
+    challenge: Optional[Dict[str, Any]],
+    max_length: int = 100,
+    *,
+    tokenizer: PreTrainedTokenizer,
+) -> List[str]:
     """
     Create the summary of a challenge
 
@@ -190,12 +193,13 @@ def summarize_challenge(
     context size less than half the max length supported by GPT-2 (1024).
     """
     if not challenge:
-        return " ".join((SpecialTokens.challenge, SpecialTokens.missing))
+        return [SpecialTokens.challenge.value, SpecialTokens.missing.value]
 
-    return " ".join(
+    return list(
         chain.from_iterable(
             tuple(
-                [t.value] + extract_string(f, challenge).split()[:max_length]
+                [t.value]
+                + tokenizer.tokenize(extract_string(f, challenge))[:max_length]
                 for f, t in (
                     ("description", SpecialTokens.challenge),
                     ("success_stakes", SpecialTokens.success_stakes),
@@ -206,19 +210,29 @@ def summarize_challenge(
     )
 
 
-def summarize_entry(entry: Dict[str, Any]) -> str:
+def summarize_entry(
+    entry: Dict[str, Any], *, tokenizer: PreTrainedTokenizer
+) -> List[str]:
     """
     Create the summary of an entry
     """
-    return " ".join(
-        (
-            summarize_challenge(entry.get("target_challenge_card")),
-            summarize_cards(entry.get("cards_played_on_challenge", [])),
+    return list(
+        chain.from_iterable(
+            (
+                summarize_challenge(
+                    entry.get("target_challenge_card"), tokenizer=tokenizer
+                ),
+                summarize_cards(
+                    entry.get("cards_played_on_challenge", []), tokenizer=tokenizer
+                ),
+            )
         )
     )
 
 
-def process_story(story: Dict[str, Any]) -> Optional[ProcessedStory]:
+def process_story(
+    story: Dict[str, Any], *, tokenizer: PreTrainedTokenizer
+) -> Optional[ProcessedStory]:
     """
     Summarize a scene. Returns a list of summarized scene entries.
     """
@@ -235,9 +249,9 @@ def process_story(story: Dict[str, Any]) -> Optional[ProcessedStory]:
             continue
 
         all_characters[character_id] = CharacterInfo(
-            summary=summarize_character(character),
-            character_id=character_id,
             entry_ids=[],
+            character_id=character_id,
+            summary=summarize_character(character, tokenizer=tokenizer),
         )
 
     all_entries: Dict[str, EntryInfo] = {}
@@ -265,10 +279,10 @@ def process_story(story: Dict[str, Any]) -> Optional[ProcessedStory]:
                 continue
 
             all_entries[entry_id] = EntryInfo(
-                text=entry.get("description", ""),
                 entry_id=entry_id,
-                summary=summarize_entry(entry),
                 character_id=character_id,
+                summary=summarize_entry(entry, tokenizer=tokenizer),
+                text=tokenizer.tokenize(entry.get("description", "")),
             )
 
             character_info = all_characters[character_id]
@@ -277,7 +291,7 @@ def process_story(story: Dict[str, Any]) -> Optional[ProcessedStory]:
     return ProcessedStory(entries=all_entries, characters=all_characters)
 
 
-def get_entry_summary(story: ProcessedStory, entry_id: str) -> str:
+def get_entry_summary(story: ProcessedStory, entry_id: str) -> List[str]:
     """
     Extracts the context for a given entry
     """
@@ -289,10 +303,12 @@ def get_entry_summary(story: ProcessedStory, entry_id: str) -> str:
     if not character_info:
         raise KeyError(f"Cannot find character {entry_info.character_id} in story!")
 
-    return " ".join([character_info.summary, entry_info.summary])
+    return list(chain.from_iterable([character_info.summary, entry_info.summary]))
 
 
-def get_entry(story: ProcessedStory, entry_id: str) -> str:
+def get_entry(
+    story: ProcessedStory, entry_id: str, max_length: int = 1024
+) -> List[str]:
     """
     Extracts the context for a given entry
     """
@@ -300,7 +316,10 @@ def get_entry(story: ProcessedStory, entry_id: str) -> str:
     if not entry_info:
         raise KeyError(f"Cannot find entry {entry_id} in story!")
 
-    return " ".join([get_entry_summary(story, entry_id), entry_info.text])
+    tokens = list(
+        chain.from_iterable([get_entry_summary(story, entry_id), entry_info.text])
+    )
+    return tokens[:max_length]
 
 
 def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
@@ -311,6 +330,10 @@ def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
     ratios by taking splits[i]/sum(splits)
     2) We balance the number of stories and token counts for each split
     according to the ratios
+
+    NOTE: The number of words in an entry is based upon splitting along
+    whitespace boundaries. This is to divorce the dataset splits from any
+    particular tokenization scheme, e.g. GPT2
     """
     story_info = []
     total_files = 0.0

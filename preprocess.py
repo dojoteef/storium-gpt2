@@ -1,11 +1,5 @@
 """
 This file contains a number of utility methods for preprocessing stories.
-
-
-NOTE: The functionality is currently based on the preprocessing approach taken
-by Shufan in prepare_dataset_two.py. I'm really not a fan of some of the
-decisions taken, but I've tried to make sure the code here mirrors what was
-previously written so the results will be consistent.
 """
 import os
 import glob
@@ -15,7 +9,7 @@ import logging
 
 from bisect import bisect_left
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from itertools import chain
 
 from pydantic import BaseModel
@@ -71,7 +65,7 @@ class CharacterInfo(BaseModel):
     The processed character info
     """
 
-    summary: List[str]
+    summary: List[int]
     character_id: str
 
     # This is a sorted list of entry ids written by the character to
@@ -99,8 +93,8 @@ class EntryInfo(BaseModel):
 
     entry_id: str
 
-    text: List[str]
-    summary: List[str]
+    text: List[int]
+    summary: List[int]
     character_id: str
 
 
@@ -124,9 +118,31 @@ def extract_string(field: str, mapping: Dict[str, Any]) -> str:
     return mapping.get(field, SpecialTokens.missing) or SpecialTokens.missing
 
 
+def encode(
+    string_or_list: Union[str, List[str], List[int]],
+    max_length: int = 100,
+    *,
+    tokenizer: PreTrainedTokenizer,
+):
+    """
+    PreTrainedTokenizer.encode outputs spurious warnings in the logger, so we
+    wrapper function was made to suppress these suprious warning messages.
+
+    The root cause of the spurious warnings is due to the encode method using
+    the passed in max_length to truncate *AFTER* warning, rather than
+    truncating first, then testing to see if there is a reason to warn.
+    """
+    logger = logging.getLogger(PreTrainedTokenizer.__module__)
+    log_level = logger.getEffectiveLevel()
+    logger.setLevel(logging.ERROR)
+    tokens = tokenizer.encode(string_or_list, max_length=max_length)
+    logger.setLevel(log_level)
+    return tokens
+
+
 def summarize_character(
     character: Dict[str, Any], max_length: int = 100, *, tokenizer: PreTrainedTokenizer
-) -> List[str]:
+) -> List[int]:
     """
     Create the summary for a character
 
@@ -140,19 +156,24 @@ def summarize_character(
     else:
         strings.append(SpecialTokens.missing)
 
-    tokens = tokenizer.tokenize(" ".join(strings))
-    return tokens[:max_length]
+    return encode(strings, max_length=max_length, tokenizer=tokenizer)
 
 
 def summarize_cards(
-    cards: List[Dict[str, Any]], *, tokenizer: PreTrainedTokenizer
-) -> List[str]:
+    cards: List[Dict[str, Any]],
+    max_length: int = 100,
+    *,
+    tokenizer: PreTrainedTokenizer,
+) -> List[int]:
     """
     Create the summary of a card
     """
     return list(
         chain.from_iterable(
-            [summarize_card(card, tokenizer=tokenizer) for card in cards]
+            [
+                summarize_card(card, max_length=max_length, tokenizer=tokenizer)
+                for card in cards
+            ]
         )
     )
 
@@ -162,7 +183,7 @@ def summarize_card(
     max_length: int = 100,
     *,
     tokenizer: PreTrainedTokenizer,
-) -> List[str]:
+) -> List[int]:
     """
     Create the summary of a card
 
@@ -176,8 +197,7 @@ def summarize_card(
     else:
         strings.append(SpecialTokens.missing)
 
-    tokens = tokenizer.tokenize(" ".join(strings))
-    return tokens[:max_length]
+    return encode(strings, max_length=max_length, tokenizer=tokenizer)
 
 
 def summarize_challenge(
@@ -185,7 +205,7 @@ def summarize_challenge(
     max_length: int = 100,
     *,
     tokenizer: PreTrainedTokenizer,
-) -> List[str]:
+) -> List[int]:
     """
     Create the summary of a challenge
 
@@ -193,13 +213,21 @@ def summarize_challenge(
     context size less than half the max length supported by GPT-2 (1024).
     """
     if not challenge:
-        return [SpecialTokens.challenge.value, SpecialTokens.missing.value]
+        return encode(
+            [SpecialTokens.challenge, SpecialTokens.missing],  # type: ignore
+            max_length=max_length,
+            tokenizer=tokenizer,
+        )
 
     return list(
         chain.from_iterable(
             tuple(
-                [t.value]
-                + tokenizer.tokenize(extract_string(f, challenge))[:max_length]
+                encode(t, max_length=max_length, tokenizer=tokenizer)
+                + encode(
+                    extract_string(f, challenge),
+                    max_length=max_length,
+                    tokenizer=tokenizer,
+                )
                 for f, t in (
                     ("description", SpecialTokens.challenge),
                     ("success_stakes", SpecialTokens.success_stakes),
@@ -211,8 +239,8 @@ def summarize_challenge(
 
 
 def summarize_entry(
-    entry: Dict[str, Any], *, tokenizer: PreTrainedTokenizer
-) -> List[str]:
+    entry: Dict[str, Any], max_length: int = 100, *, tokenizer: PreTrainedTokenizer
+) -> List[int]:
     """
     Create the summary of an entry
     """
@@ -220,18 +248,34 @@ def summarize_entry(
         chain.from_iterable(
             (
                 summarize_challenge(
-                    entry.get("target_challenge_card"), tokenizer=tokenizer
+                    entry.get("target_challenge_card"),
+                    max_length=max_length,
+                    tokenizer=tokenizer,
                 ),
                 summarize_cards(
-                    entry.get("cards_played_on_challenge", []), tokenizer=tokenizer
+                    entry.get("cards_played_on_challenge", []),
+                    max_length=max_length,
+                    tokenizer=tokenizer,
                 ),
             )
         )
     )
 
 
+def process_story_file(
+    filename: str, *, tokenizer: PreTrainedTokenizer
+) -> Optional[ProcessedStory]:
+    """
+    Wrapper around process_story that takes in a filename of a story to process
+    """
+    with open(filename, "rt") as file:
+        story = json.load(file)
+
+    return process_story(story, tokenizer=tokenizer)
+
+
 def process_story(
-    story: Dict[str, Any], *, tokenizer: PreTrainedTokenizer
+    story: Dict[str, Any], max_length=100, *, tokenizer: PreTrainedTokenizer
 ) -> Optional[ProcessedStory]:
     """
     Summarize a scene. Returns a list of summarized scene entries.
@@ -251,7 +295,9 @@ def process_story(
         all_characters[character_id] = CharacterInfo(
             entry_ids=[],
             character_id=character_id,
-            summary=summarize_character(character, tokenizer=tokenizer),
+            summary=summarize_character(
+                character, max_length=max_length, tokenizer=tokenizer
+            ),
         )
 
     all_entries: Dict[str, EntryInfo] = {}
@@ -281,8 +327,14 @@ def process_story(
             all_entries[entry_id] = EntryInfo(
                 entry_id=entry_id,
                 character_id=character_id,
-                summary=summarize_entry(entry, tokenizer=tokenizer),
-                text=tokenizer.tokenize(entry.get("description", "")),
+                summary=summarize_entry(
+                    entry, max_length=max_length, tokenizer=tokenizer
+                ),
+                text=encode(
+                    entry.get("description", ""),
+                    max_length=max_length,
+                    tokenizer=tokenizer,
+                ),
             )
 
             character_info = all_characters[character_id]
@@ -291,7 +343,7 @@ def process_story(
     return ProcessedStory(entries=all_entries, characters=all_characters)
 
 
-def get_entry_summary(story: ProcessedStory, entry_id: str) -> List[str]:
+def get_entry_summary(story: ProcessedStory, entry_id: str) -> List[int]:
     """
     Extracts the context for a given entry
     """
@@ -308,7 +360,7 @@ def get_entry_summary(story: ProcessedStory, entry_id: str) -> List[str]:
 
 def get_entry(
     story: ProcessedStory, entry_id: str, max_length: int = 1024
-) -> List[str]:
+) -> List[int]:
     """
     Extracts the context for a given entry
     """
@@ -340,6 +392,7 @@ def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
     total_words = 0.0
     total_scenes = 0.0
     total_entries = 0.0
+    data_path = os.path.abspath(data_path)
     for filename in glob.glob(os.path.join(data_path, "**/*.json"), recursive=True):
         with open(filename, "rt") as file:
             story = json.load(file)
@@ -389,7 +442,7 @@ def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
             self.words += words
             self.scenes += scenes
             self.entries += entries
-            self.filenames.append(filename)
+            self.filenames.append(filename.replace(data_path, "").lstrip("/"))
 
         @property
         def weight(self) -> float:

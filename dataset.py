@@ -30,7 +30,7 @@ from preprocess import (
 )
 
 
-SPLIT_NAMES = ["test"]
+SPLIT_NAMES = ("train", "validation", "test")
 AVAILABLE_TOKENIZERS = [
     model
     for tokenizer_type in (

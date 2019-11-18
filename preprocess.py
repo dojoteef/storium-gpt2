@@ -1,12 +1,13 @@
-"""
-This file contains a number of utility methods for preprocessing stories.
+""" This file contains a number of utility methods for preprocessing stories.
 """
 import os
 import glob
 import json
 import heapq
+import bisect
 import logging
 from numbers import Number
+from dataclasses import dataclass
 from itertools import zip_longest
 from contextlib import contextmanager
 
@@ -20,11 +21,11 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypeVar,
     Union,
 )
 
 import torch
-from pydantic import BaseModel
 from kiwisolver import Constraint, Solver, Variable, strength
 from transformers import PreTrainedTokenizer
 
@@ -238,16 +239,18 @@ class Segment(tuple):
         """
         length = len(self)
         if self.trim is Trim.end:
-            _slice = slice(length)
-        elif self.trim is Trim.start:
-            _slice = slice(-length, None)
-        elif self.trim is Trim.middle:
+            return slice(length)
+
+        if self.trim is Trim.start:
+            return slice(-length, None)
+
+        if self.trim is Trim.middle:
             remaining = self.unconstrained_length - length
             start = remaining // 2
             end = start - remaining
-            _slice = slice(start, end)
+            return slice(start, end)
 
-        return _slice
+        raise RuntimeError("Unknown trim type!")
 
     @property
     def unconstrained_length(self):
@@ -356,14 +359,74 @@ class Segment(tuple):
         if with_stats:
             stats = {t: 0 for t in SpecialToken}
             for _, segment_ids in self.token_segments:
-                for segment_id in segment_ids:
+                for segment_id in set(segment_ids):
                     stats[segment_id] = stats.get(segment_id, 0) + 1
             segment_dict["stats"] = stats
 
         return segment_dict
 
 
-class CharacterInfo(BaseModel):
+DataType = TypeVar("DataType")
+
+
+class IndexedSet(List[DataType]):
+    """
+    A class that makes indexing a unique sorted list easy. All the entries must
+    have unique keys, if you try to insert an already existing key, it will
+    raise an error.
+
+    Loosely based on SortedCollection, which is referenced in the python docs
+    for bisect.
+
+    See: https://code.activestate.com/recipes/577197-sortedcollection/
+    """
+
+    def __init__(self, *iterable: Iterable[DataType], key=int):
+        # Ensure the list is in sorted order
+        self._key = key
+
+        values = tuple(*iterable)
+        if values:
+            keys, values = zip(*sorted((key(i), i) for i in values))
+            self._keys = list(keys)
+        else:
+            self._keys = []
+
+        super().__init__(values)
+
+    def insert(self, value):
+        """
+        Insert into the set
+        """
+        key = self._key(value)
+        idx = bisect.bisect_left(self._keys, key)
+        if (
+            idx != len(self._keys)
+            and self[idx] == value  # pylint:disable=unsubscriptable-object
+        ):
+            # it's already in the set, no need to insert it
+            return
+
+        self._keys.insert(idx, key)
+        super().insert(idx, value)  # pylint:disable=no-member
+
+    def index(self, value: DataType) -> int:  # type: ignore
+        """
+        Find the index of the item in the set
+        """
+        key = self._key(value)
+        idx = bisect.bisect_left(self._keys, key)
+        if (
+            idx != len(self._keys)
+            and self[idx] == value  # pylint:disable=unsubscriptable-object
+        ):
+            return idx
+
+        raise ValueError(f"{value} not in set")
+
+
+@dataclass
+class CharacterInfo:
     """
     The processed character info
     """
@@ -373,10 +436,11 @@ class CharacterInfo(BaseModel):
 
     # This is a sorted list of entry ids written by the character to
     # allow easily looking up the previous entries for the character
-    entry_ids: List[str]
+    entry_ids: IndexedSet
 
 
-class EntryInfo(BaseModel):
+@dataclass
+class EntryInfo:
     """
     The processed entry info
     """
@@ -388,7 +452,45 @@ class EntryInfo(BaseModel):
     summary: Segment
 
 
-class ProcessedStory(BaseModel):
+class IndexedDict(Dict[str, DataType]):
+    """
+    A convenient wrapper around dict that allows integer-based indexing
+    operations
+    """
+
+    indices: List[str]
+    reverse_indices: Dict[str, int]
+
+    def __init__(
+        self, mapping: Union[Iterable[Tuple[str, DataType]], Mapping[str, DataType]],
+    ):
+        super().__init__()
+        self.indices = []
+        self.reverse_indices = {}
+
+        if isinstance(mapping, Mapping):
+            mapping = mapping.items()
+
+        for idx, (key, value) in enumerate(mapping):
+            self.indices.append(key)
+            self.reverse_indices[key] = idx
+            super().__setitem__(key, value)  # pylint:disable=no-member
+
+    def __delitem__(self, key: str):
+        raise RuntimeError("IndexedDict is immutable!")
+
+    def __setitem__(self, key: str, value: DataType):
+        raise RuntimeError("IndexedDict is immutable!")
+
+    def index(self, key: str) -> int:
+        """
+        Return the index of the key
+        """
+        return self.reverse_indices[key]
+
+
+@dataclass
+class ProcessedStory:
     """
     This defines the structure of a story after processing
     """
@@ -396,13 +498,13 @@ class ProcessedStory(BaseModel):
     game_id: str
 
     # A mapping of character id to character info
-    characters: Dict[str, CharacterInfo]
+    characters: IndexedDict[CharacterInfo]
 
     # A mapping of entry id to entry info
-    entries: Dict[str, EntryInfo]
+    entries: IndexedDict[EntryInfo]
 
     # A mapping of entry id to establishment's entry info
-    establishment_entries: Dict[str, EntryInfo]
+    establishment_entries: IndexedDict[EntryInfo]
 
 
 def extract_string(field: str, mapping: Dict[str, Any]) -> str:
@@ -625,12 +727,15 @@ class Preprocessor:
         if not scenes or not characters or not isinstance(scenes, Sequence):
             return None
 
-        all_characters: Dict[str, CharacterInfo] = {
+        character_list = [
             # Treat narrator as a character who is always present without a summary
-            "narrator": CharacterInfo(
-                entry_ids=[], character_id="narrator", summary=Segment(),
+            (
+                "narrator",
+                CharacterInfo(
+                    entry_ids=IndexedSet(), character_id="narrator", summary=Segment(),
+                ),
             )
-        }
+        ]
         for character in characters:
             character_id = character.get("character_seq_id")
             if not character_id:
@@ -646,20 +751,25 @@ class Preprocessor:
             #   either 'narrator' or 'character:XYZ' where XYZ is the <CharacterSeqId>
             # See https://storium.com/help/export/json/0.9.2
             character_id = f"character:{character_id}"
-            all_characters[character_id] = CharacterInfo(
-                entry_ids=[],
-                character_id=character_id,
-                summary=self.summarize_character(character),
+            character_list.append(
+                (
+                    character_id,
+                    CharacterInfo(
+                        entry_ids=IndexedSet(),
+                        character_id=character_id,
+                        summary=self.summarize_character(character),
+                    ),
+                )
             )
 
-        all_entries: Dict[str, EntryInfo] = {}
-        all_establishment_entries: Dict[str, EntryInfo] = {}
+        all_characters = IndexedDict(character_list)
+        entry_list: List[Tuple[str, EntryInfo]] = []
+        establishment_list: List[Tuple[str, EntryInfo]] = []
         for scene in scenes:
             entries = scene.get("entries", [])
             if not entries or not isinstance(entries, Sequence):
                 continue
 
-            establishment_id: str
             for entry in entries:
                 entry_id = entry.get("seq_id", None)
                 if entry_id is None:
@@ -667,25 +777,27 @@ class Preprocessor:
                     continue
 
                 entry_format = entry.get("format")
-                if entry_format == "establishment":
-                    establishment_id = entry_id
-
-                entry_info = self.process_entry(entry, establishment_id)
+                entry_info = self.process_entry(
+                    entry, establishment_list[-1][0] if establishment_list else entry_id
+                )
                 if not entry_info:
                     continue
 
-                all_entries[entry_info.entry_id] = entry_info
+                entry_list.append((entry_id, entry_info))
                 if entry_format == "establishment":
-                    all_establishment_entries[entry_id] = entry_info
+                    establishment_list.append((entry_id, entry_info))
 
-                character_info = all_characters[entry["role"]]
-                character_info.entry_ids.append(entry_id)
+                # See https://github.com/PyCQA/pylint/issues/3129
+                character_info = all_characters[  # pylint:disable=unsubscriptable-object
+                    entry["role"]
+                ]
+                character_info.entry_ids.insert(entry_id)
 
         return ProcessedStory(
             game_id=story["game_pid"],
-            entries=all_entries,
+            entries=IndexedDict(entry_list),
             characters=all_characters,
-            establishment_entries=all_establishment_entries,
+            establishment_entries=IndexedDict(establishment_list),
         )
 
     def get_entry_summary(self, story: ProcessedStory, entry_id: str) -> Segment:
@@ -718,24 +830,41 @@ class Preprocessor:
 
         end_index = max(0, character_info.entry_ids.index(entry_id) - 1)
         start_index = max(0, end_index - self.character_history)
+        prev_entry_ids = IndexedSet(
+            character_info.entry_ids[idx] for idx in range(start_index, end_index)
+        )
+
+        end_index = max(0, story.entries.index(entry_id) - 1)
+        start_index = max(0, end_index - self.history)
         for entry_index in range(start_index, end_index):
+            prev_entry_ids.insert(story.entries.indices[entry_index])
+
+        for idx, prev_entry_id in enumerate(prev_entry_ids, 1):
             # Get the summary of the previous entries from the same character and
             # mark them as such
-            entry_id = character_info.entry_ids[entry_index]
+            entry_info = story.entries[prev_entry_id]
+            if entry_info.entry_id == entry_info.establishment_id:
+                continue
+
+            character_token = (
+                SpecialToken.same_character
+                if entry_info.character_id == character_id
+                else SpecialToken.diff_character
+            )
             summary.append(
                 Segment(
-                    story.entries[entry_id].summary,
+                    entry_info.summary,
                     segment_ids=tuple(
                         self.tokenizer.encode(
-                            (SpecialToken.previous, SpecialToken.same_character)
+                            idx * (SpecialToken.previous,) + (character_token,)
                         )
                     ),
                 )
             )
 
         entry_summary = entry_info.summary
-        if self.character_history and start_index != end_index:
-            # If we used history, then mark this entry as the current entry
+        if prev_entry_ids:
+            # If we used any history, then mark this entry as the current entry
             entry_summary = Segment(
                 entry_info.summary,
                 segment_ids=tuple(

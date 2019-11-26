@@ -1,4 +1,5 @@
-""" This file contains a number of utility methods for preprocessing stories.
+"""
+This file contains a number of utility methods for preprocessing stories.
 """
 import os
 import glob
@@ -6,9 +7,10 @@ import json
 import heapq
 import bisect
 import logging
+import argparse
 from numbers import Number
 from dataclasses import dataclass
-from itertools import zip_longest
+from itertools import islice, zip_longest
 from contextlib import contextmanager
 
 from enum import Enum, auto, unique
@@ -29,6 +31,8 @@ import torch
 from kiwisolver import Constraint, Solver, Variable, strength
 from transformers import PreTrainedTokenizer
 
+SPLIT_NAMES = ("train", "validation", "test")
+
 
 ###############################################################################
 # IDEA:
@@ -38,12 +42,7 @@ from transformers import PreTrainedTokenizer
 # missing data.
 #
 # This, for example, could be used as a simple technique for predicting a card
-# to play for the "wild" cards
-###############################################################################
-
-###############################################################################
-# TODOs:
-# * Handle non-character history
+# to play for the "wild" cards. Could use the BART model for this.
 ###############################################################################
 
 
@@ -138,6 +137,7 @@ class Segment(tuple):
     # Layout related variables
     trim: Trim
     constrained: bool
+    naive_max_length: int
     preferred_length: int
     length: Optional[Variable]
 
@@ -157,6 +157,7 @@ class Segment(tuple):
         # newly created tuple. It must be unconstrained to begin with.
         self.trim = trim
         self.constrained = False
+        self.naive_max_length = -1
         self.preferred_length = preferred_length
 
         all_ints = all(isinstance(t, int) for t in self)
@@ -215,6 +216,12 @@ class Segment(tuple):
         length see Segement.unconstrained_length
         """
         unconstrained_length = self.unconstrained_length
+        if self.naive_max_length >= 0:
+            if not self.preferred_length:
+                return min(unconstrained_length, 100)
+
+            return unconstrained_length
+
         if not self.constrained or not self.length:
             return unconstrained_length
 
@@ -263,11 +270,25 @@ class Segment(tuple):
     def token_segments(self):
         """
         A generator which yields all token ids within the segment recursively,
+        along with their associated segment ids, which respects max length.
+        """
+        if self.constrained and self.naive_max_length >= 0:
+            return islice(self._token_segments, self.naive_max_length)
+
+        return self._token_segments
+
+    @property
+    def _token_segments(self):
+        """
+        A generator which yields all token ids within the segment recursively,
         along with their associated segment ids
         """
         for segment in self:
             if isinstance(segment, Segment):
-                for token_id, segment_ids in segment.token_segments:
+                for (
+                    token_id,
+                    segment_ids,
+                ) in segment._token_segments:  # pylint:disable=protected-access
                     yield token_id, self.segment_ids + segment_ids
             else:
                 yield segment, self.segment_ids
@@ -275,7 +296,7 @@ class Segment(tuple):
     @property
     def lengths(self):
         """
-        A generator which yields all token ids within the segment recursively
+        A generator which yields all the length variables within the segment recursively
         """
         for segment in self:
             if isinstance(segment, Segment):
@@ -284,7 +305,7 @@ class Segment(tuple):
         if self.length:
             yield self.length
 
-    def _mark_constrained(self, constrained: bool):
+    def _mark_constrained(self, constrained: bool, max_length: int = -1):
         """
         Internal method to mark the Segment hierarchy as constrained or not.
 
@@ -293,10 +314,11 @@ class Segment(tuple):
         for segment in self:
             if isinstance(segment, Segment):
                 segment._mark_constrained(  # pylint:disable=protected-access
-                    constrained
+                    constrained, max_length
                 )
 
         self.constrained = constrained
+        self.naive_max_length = max_length
 
     def _constrain(self, max_length: int):
         """
@@ -312,12 +334,13 @@ class Segment(tuple):
         solver.updateVariables()
 
     @contextmanager
-    def constraint(self, max_length: int):
+    def constraint(self, max_length: int, naive: bool = False):
         """
         A context manager that constrains the Segment, performs the necessary
         operation then unconstrains the Segment.
         """
-        self._mark_constrained(True)
+        naive_max_length = max_length if naive else -1
+        self._mark_constrained(True, naive_max_length)
         self._constrain(max_length)
         yield
         self._mark_constrained(False)
@@ -337,7 +360,7 @@ class Segment(tuple):
                 ...
             ]
             "stats": {
-                SpecialToken: count,
+                int: count,
                 ...
             }
         }
@@ -357,7 +380,7 @@ class Segment(tuple):
         }
 
         if with_stats:
-            stats = {t: 0 for t in SpecialToken}
+            stats: Dict[int, int] = {}
             for _, segment_ids in self.token_segments:
                 for segment_id in set(segment_ids):
                     stats[segment_id] = stats.get(segment_id, 0) + 1
@@ -574,7 +597,7 @@ class Preprocessor:
         """
         return Segment(
             self.encode(string_or_list),
-            segment_ids=tuple(self.tokenizer.encode(special_tokens))
+            segment_ids=tuple(self.tokenizer.convert_tokens_to_ids(special_tokens))
             if special_tokens
             else tuple(),
             preferred_length=preferred_length,
@@ -636,7 +659,9 @@ class Preprocessor:
         return Segment(
             summary,
             segment_ids=tuple(
-                self.tokenizer.encode(SpecialToken.from_string(card["namespace"])),
+                self.tokenizer.convert_tokens_to_ids(
+                    (SpecialToken.from_string(card["namespace"]),)
+                ),
             ),
         )
 
@@ -669,7 +694,9 @@ class Preprocessor:
         return Segment(
             summary,
             segment_ids=tuple(
-                self.tokenizer.encode(SpecialToken.from_string(entry_type)),
+                self.tokenizer.convert_tokens_to_ids(
+                    (SpecialToken.from_string(entry_type),)
+                ),
             ),
         )
 
@@ -855,7 +882,7 @@ class Preprocessor:
                 Segment(
                     entry_info.summary,
                     segment_ids=tuple(
-                        self.tokenizer.encode(
+                        self.tokenizer.convert_tokens_to_ids(
                             idx * (SpecialToken.previous,) + (character_token,)
                         )
                     ),
@@ -868,7 +895,7 @@ class Preprocessor:
             entry_summary = Segment(
                 entry_info.summary,
                 segment_ids=tuple(
-                    self.tokenizer.encode(
+                    self.tokenizer.convert_tokens_to_ids(
                         (SpecialToken.current, SpecialToken.same_character)
                     )
                 ),
@@ -1033,3 +1060,43 @@ def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
         logging.info(split)
 
     return tuple(s.filenames for s in final_splits)
+
+
+def perform_split(args):
+    """
+    Split the dataset according to the passed in args
+    """
+    splits = split_dataset(
+        args.data_directory, (args.train_split, args.validation_split, args.test_split)
+    )
+    for split, filenames in zip(SPLIT_NAMES, splits):
+        with open(
+            os.path.join(args.output_directory, f"{split}_filenames.txt"), "wt"
+        ) as split_file:
+            split_file.write("\n".join(filenames))
+
+
+def define_split_args(
+    sub_parsers: argparse._SubParsersAction,  # pylint:disable=protected-access
+):
+    """ Define the arguments needed for the split command """
+    parser = sub_parsers.add_parser("split", help="Split the dataset")
+    parser.add_argument(
+        "--train-split",
+        type=int,
+        default=8,
+        help="An int denoting the relative amount of data to use for training",
+    )
+    parser.add_argument(
+        "--validation-split",
+        type=int,
+        default=1,
+        help="An int denoting the relative amount of data to use for validation",
+    )
+    parser.add_argument(
+        "--test-split",
+        type=int,
+        default=1,
+        help="An int denoting the relative amount of data to use for testing",
+    )
+    parser.set_defaults(func=perform_split)

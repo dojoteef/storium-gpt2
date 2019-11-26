@@ -4,9 +4,13 @@ Utilities and classes for manipulating the dataset
 import os
 import logging
 import argparse
-from typing import Any, Dict, List, Optional
+from itertools import chain
 from multiprocessing import Pool
+from typing import Any, Dict, List, Optional, Sequence, Union
 
+import torch
+from torch import nn
+from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
@@ -19,18 +23,14 @@ from transformers import (
     RobertaTokenizer,
     DistilBertTokenizer,
 )
-import torch
-from torch.utils.data import Dataset
 
-from preprocess import (
+from data.preprocess import (
     Preprocessor,
     tensorize,
-    split_dataset,
     SpecialToken,
+    SPLIT_NAMES,
 )
 
-
-SPLIT_NAMES = ("train", "validation", "test")
 AVAILABLE_TOKENIZERS = [
     model
     for tokenizer_type in (
@@ -47,36 +47,95 @@ AVAILABLE_TOKENIZERS = [
 ]
 
 
+EntryList = Sequence[Dict[str, Any]]
+
+
 class StoriumDataset(Dataset):
     """
     The torch dataset class for Storium for use in a DataLoader
     """
 
-    def __init__(self, tokenizer_name: str, cache_dir: Optional[str] = None):
+    def __init__(
+        self, split: str, tokenizer_name: str, cache_dir: Optional[str] = None
+    ):
+        self.split = split
         self.cache_dir = cache_dir
         self.tokenizer_name = tokenizer_name
         self.entries: List[Dict[str, Any]] = []
 
-    @staticmethod
-    def _process(filename: str, preprocessor: Preprocessor) -> List[Dict[str, Any]]:
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, Sequence):
+            return [self.entries[i] for i in idx]
+
+        return self.entries[idx]
+
+    def collate(
+        self, entries: Union[Sequence[EntryList], EntryList],
+    ):
         """
-        Process a single file and return the resulting entries
+        Collate the list of batches
         """
-        entries: List[Dict[str, Any]] = []
-        story = preprocessor.process_story_file(filename)
-        if not story or not story.entries:
-            logging.debug("Skipped %s", filename)
-            return entries
 
-        for entry_id in story.entries.keys():
-            move = preprocessor.get_move(story, entry_id)
-            if not move:
-                continue
+        def collator(entry_list: EntryList):
+            """
+            Collate a list of entries
+            """
+            tokens = nn.utils.rnn.pad_sequence(
+                tuple(e["tokens"] for e in entry_list),
+                batch_first=True,
+                padding_value=-1,
+            )
+            max_length = tokens.shape[-1]
 
-            with move.constraint(preprocessor.max_length):
-                entries.append(move.asdict(with_stats=True))
+            def pad(entry, field):
+                """
+                Pad the segment
+                """
+                return nn.utils.rnn.pad_sequence(
+                    tuple(
+                        torch.cat(
+                            (
+                                s[field],
+                                s[field].new_full((max_length - len(s[field]),), 0),
+                            )
+                        )
+                        for s in entry["segments"]
+                    ),
+                    batch_first=True,
+                    padding_value=0,
+                )
 
-        return entries
+            segments = nn.utils.rnn.pad_sequence(
+                tuple(pad(e, "segments") for e in entry_list),
+                batch_first=True,
+                padding_value=0,
+            )
+            segment_masks = nn.utils.rnn.pad_sequence(
+                tuple(pad(e, "mask") for e in entry_list),
+                batch_first=True,
+                padding_value=0,
+            )
+
+            return {
+                "tokens": tokens,
+                "segments": segments,
+                "segment_masks": segment_masks,
+                "num_tokens": sum(len(e["tokens"]) for e in entry_list),
+            }
+
+        if not entries:
+            return {}
+
+        if isinstance(entries[0], Sequence):
+            collated = collator(list(chain(*entries)))
+            collated["chunk_sizes"] = tuple(len(e) for e in entries)
+        else:
+            collated = collator(entries)  # type:ignore
+
+        return collated
 
     def get_tokenizer(self):
         """
@@ -94,13 +153,52 @@ class StoriumDataset(Dataset):
 
         return tokenizer
 
-    def process_and_load(
+    def dataset_path(self, directory):
+        """
+        The path to the dataset
+        """
+        return os.path.join(directory, f"storium_{self.split}.{self.tokenizer_name}.pt")
+
+    @staticmethod
+    def _process(
+        filename: str, preprocessor: Preprocessor, naive_layout: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Process a single file and return the resulting entries
+        """
+        entries: List[Dict[str, Any]] = []
+        story = preprocessor.process_story_file(filename)
+        if not story or not story.entries:
+            logging.debug("Skipped %s", filename)
+            return entries
+
+        for entry_id in story.entries.keys():
+            move = preprocessor.get_move(story, entry_id)
+            if not move:
+                continue
+
+            with move.constraint(preprocessor.max_length, naive=naive_layout):
+                entries.append(move.asdict(with_stats=True))
+
+        return entries
+
+    def load(self, directory):
+        """
+        Load the processed dataset
+        """
+        output_path = self.dataset_path(directory)
+        if not os.path.isfile(output_path):
+            raise ValueError(f"{output_path} not found!")
+
+        self.entries = torch.load(output_path)
+
+    def process(
         self,
         filenames: List[str],
         directory: str,
-        split: str,
         history: int = 0,
         character_history: int = 0,
+        naive_layout: bool = False,
         force: bool = False,
     ):
         """
@@ -109,32 +207,41 @@ class StoriumDataset(Dataset):
 
         - **filenames**: A list of filenames to preprocess
         - **directory**: path to a directory to save the result
-        - **split**: the name of the data split
         - **force**: whether to force processing if the target file already exists
 
         Returns the path of the preprocessed file to load
         """
-        output_path = os.path.join(
-            directory, f"storium_{split}.{self.tokenizer_name}.pt"
-        )
+        output_path = self.dataset_path(directory)
         if os.path.isfile(output_path) and not force:
-            self.entries = torch.load(output_path)
             return
+
+        if not os.path.exists(directory):
+            logging.warning(
+                "Output directory %s does not exist. Creating it.", directory
+            )
+            os.makedirs(directory)
 
         results = []
         pool = Pool()
         preprocessor = Preprocessor(
-            self.get_tokenizer(), history=history, character_history=character_history
+            self.get_tokenizer(), history=history, character_history=character_history,
         )
         for filename in filenames:
             results.append(
-                pool.apply_async(type(self)._process, [filename, preprocessor])
+                pool.apply_async(
+                    type(self)._process,
+                    [filename, preprocessor],
+                    {"naive_layout": naive_layout},
+                )
             )
         pool.close()
 
         self.entries = []
         for result in tqdm(
-            results, unit="file", dynamic_ncols=True, desc=f"Processing {split} set"
+            results,
+            unit="file",
+            dynamic_ncols=True,
+            desc=f"Processing {self.split} set",
         ):
             entries = result.get()
             if not entries:
@@ -146,13 +253,10 @@ class StoriumDataset(Dataset):
 
         torch.save(self.entries, output_path)
 
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, idx):
-        return self.entries[idx]
-
-    def __repr__(self):
+    def stats_str(self):
+        """
+        Create a string representation of the dataset stats
+        """
         count = len(self.entries)
         strings = ["dataset stats:"]
         strings.append(f" #entries={count}")
@@ -176,7 +280,7 @@ class StoriumDataset(Dataset):
             strings.append(" segment-level stats:")
             tokenizer = self.get_tokenizer()
             for token in SpecialToken:
-                segment_id = tokenizer.encode(token)[0]
+                segment_id = tokenizer.convert_tokens_to_ids(token)
                 token_min = min(
                     e.get("stats", {}).get(segment_id, 0) for e in self.entries
                 )
@@ -196,51 +300,10 @@ class StoriumDataset(Dataset):
         return "\n".join(strings)
 
 
-def perform_split(args):
-    """
-    Split the dataset according to the passed in args
-    """
-    splits = split_dataset(
-        args.data_directory, (args.train_split, args.validation_split, args.test_split)
-    )
-    for split, filenames in zip(SPLIT_NAMES, splits):
-        with open(
-            os.path.join(args.output_directory, f"{split}_filenames.txt"), "wt"
-        ) as split_file:
-            split_file.write("\n".join(filenames))
-
-
-def define_split_args(
-    sub_parsers: argparse._SubParsersAction,  # pylint:disable=protected-access
-):
-    """ Define the arguments needed for the split command """
-    parser = sub_parsers.add_parser("split", help="Split the dataset")
-    parser.add_argument(
-        "--train-split",
-        type=int,
-        default=8,
-        help="An int denoting the relative amount of data to use for training",
-    )
-    parser.add_argument(
-        "--validation-split",
-        type=int,
-        default=1,
-        help="An int denoting the relative amount of data to use for validation",
-    )
-    parser.add_argument(
-        "--test-split",
-        type=int,
-        default=1,
-        help="An int denoting the relative amount of data to use for testing",
-    )
-    parser.set_defaults(func=perform_split)
-
-
 def perform_preprocessing(args):
     """
     Preprocess the dataset according to the passed in args
     """
-    dataset = StoriumDataset(args.tokenizer, cache_dir=args.cache_dir)
     for split in SPLIT_NAMES:
         with open(
             os.path.join(args.data_directory, f"{split}_filenames.txt"), "rt"
@@ -250,16 +313,20 @@ def perform_preprocessing(args):
                 for filename in file.readlines()
             ]
 
-        dataset.process_and_load(
+        dataset = StoriumDataset(split, args.tokenizer, cache_dir=args.cache_dir)
+        dataset.process(
             filenames,
             args.output_directory,
-            split,
             history=args.history,
             character_history=args.character_history,
+            naive_layout=args.naive_layout,
             force=args.force,
         )
 
-        logging.info("%s %s", split, dataset)
+        if logging.getLogger().getEffectiveLevel() <= logging.INFO:
+            dataset.load(args.output_directory)
+
+        logging.info("%s %s", split, dataset.stats_str())
 
 
 def define_preprocess_args(
@@ -267,12 +334,6 @@ def define_preprocess_args(
 ):
     """ Define the arguments needed for the preprocess command """
     parser = sub_parsers.add_parser("preprocess", help="Preprocess the dataset")
-    parser.add_argument(
-        "--cache-dir",
-        type=str,
-        default=None,
-        help="Where to cache the downloaded pretrained tokenizer",
-    )
     parser.add_argument(
         "--tokenizer",
         type=str,
@@ -293,61 +354,15 @@ def define_preprocess_args(
         help="How many character specific entry summaries to include for context",
     )
     parser.add_argument(
+        "--naive-layout",
+        action="store_true",
+        default=False,
+        help="Whether to force preprocessing if preprocessed data already exists",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         default=False,
         help="Whether to force preprocessing if preprocessed data already exists",
     )
     parser.set_defaults(func=perform_preprocessing)
-
-
-def parse_args():
-    """ Parse the arguments required for splitting the dataset """
-    parser = argparse.ArgumentParser("Split/Preprocess Dataset")
-    parser.add_argument(
-        "data_directory",
-        type=str,
-        help="Location of the raw dataset (directory of json files)",
-    )
-    parser.add_argument(
-        "--output-directory",
-        type=str,
-        default=".",
-        help="Where to output the generated files",
-    )
-    sub_parsers = parser.add_subparsers()
-    define_split_args(sub_parsers)
-    define_preprocess_args(sub_parsers)
-
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        default=0,
-        action="count",
-        help="Whether to have verbose output",
-    )
-
-    args = parser.parse_args()
-    if not hasattr(args, "func"):
-        parser.print_usage()
-        exit(1)
-
-    return args
-
-
-def main():
-    """
-    Main entry point when calling this module directly
-    """
-    args = parse_args()
-    if args.verbose:
-        logging.getLogger().setLevel(
-            logging.DEBUG if args.verbose > 1 else logging.INFO
-        )
-
-    # perform the subcommand chosen
-    args.func(args)
-
-
-if __name__ == "__main__":
-    main()

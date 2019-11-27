@@ -2,14 +2,12 @@
 A module to handle metrics
 """
 import copy
-import os
-import shutil
+import json
 import numbers
-import tempfile
 from functools import partial
+from typing import Any, Dict
 
 import numpy as np
-import torch
 
 from utils import pairwise
 
@@ -46,20 +44,52 @@ format_dynamic_float = partial(
 # pylint:enable=invalid-name
 
 
-class Metric(object):
+FORMATTERS = {
+    "format_int": format_int,
+    "format_time": format_time,
+    "format_basic": format_basic,
+    "format_dynamic": format_dynamic,
+    "format_percent": format_percent,
+    "format_float": format_float,
+    "format_scientific": format_scientific,
+    "format_dynamic_float": format_dynamic_float,
+}
+
+
+class Metric:
     """ Class that represents a metric """
 
     def __init__(
-        self, name, formatter=format, default_format_str="g(a)", max_history=None
+        self,
+        name,
+        formatter="format_basic",
+        default_format_str="g(a)",
+        max_history=None,
     ):
-        super(Metric, self).__init__()
-
         self.name = name
-        self.formatter = formatter
-        self.default_format_str = default_format_str
         self.max_history = max_history
 
+        self._formatter = formatter
+        self.default_format_str = default_format_str
+
         self.counts, self.values, self.min, self.max = self.reset()
+
+    @classmethod
+    def from_dict(cls, state: Dict[str, Any]):
+        """
+        Create a metric from the passed in dictionary
+        """
+        metric = Metric("")
+        metric.__dict__.update(state)
+
+        return metric
+
+    @property
+    def formatter(self):
+        """
+        Get the formatter function for this metric
+        """
+        return FORMATTERS[self._formatter]
 
     def reset(self):
         """ Reset the metrics """
@@ -219,17 +249,23 @@ class Metric(object):
 class MetricStore(object):
     """ A collection of metrics """
 
-    def __init__(self, path=None, default_format_str="c"):
+    def __init__(self, default_format_str="c"):
         super(MetricStore, self).__init__()
 
-        self.path = path
         self.metrics = {}
         self.default_format_str = default_format_str
 
-    @property
-    def directory(self):
-        """ The directory where the metrics are located """
-        return os.path.dirname(self.path) if self.path else None
+    def keys(self):
+        """ Return the metrics keys """
+        return self.metrics.keys()
+
+    def values(self):
+        """ Return the metrics values """
+        return self.metrics.values()
+
+    def items(self):
+        """ Return the metrics items """
+        return self.metrics.items()
 
     def __getitem__(self, key):
         """ Return the requested metric """
@@ -254,26 +290,21 @@ class MetricStore(object):
                 {metric.name: copy.deepcopy(metric) for metric in metrics}
             )
 
-    def save(self):
+    def save(self, path):
         """ Save the metrics to disk """
-        if not self.path:
-            raise RuntimeError("Trying to save to disk, but no path was specified!")
+        with open(path, "wt") as metric_file:
+            json.dump(
+                self.metrics,
+                metric_file,
+                indent=2,
+                default=lambda obj: getattr(obj, "__dict__", {}),
+            )
 
-        if not os.path.isdir(self.directory):
-            os.makedirs(self.directory)
-        torch.save(self, self.path)
-
-        with tempfile.NamedTemporaryFile() as temp_checkpoint_file:
-            torch.save(self, temp_checkpoint_file)
-
-            shutil.copy(temp_checkpoint_file.name, f"{self.path}.incomplete")
-            os.rename(f"{self.path}.incomplete", self.path)
-
-    def load(self):
+    def load(self, path):
         """ Load the metrics from disk """
-        return (
-            torch.load(self.path) if self.path and os.path.isfile(self.path) else self
-        )
+        with open(path, "rt") as metric_file:
+            for name, metric_state in json.load(metric_file).items():
+                self.metrics[name] = Metric.from_dict(metric_state)
 
     def __str__(self):
         """ Return a string representation of the metric store """

@@ -5,14 +5,15 @@ import io
 import sys
 import contextlib
 import threading
-from typing import Iterable
+from typing import Iterable, Union
 from numbers import Integral
 from itertools import tee, zip_longest
+from subprocess import check_output, CalledProcessError
 
 from tqdm import tqdm
 
 
-def ceildiv(x: Integral, y: Integral):
+def ceildiv(x: Union[Integral, int], y: Union[Integral, int]):
     """ See https://stackoverflow.com/a/17511341 """
     return -(-x // y)
 
@@ -67,3 +68,15 @@ def tqdm_unwrap_stdout():
     yield
     _STREAMS.stdout_stack.append(sys.stdout)
     sys.stdout = saved
+
+
+def get_version_string():
+    """ Return a git version string for the repo """
+    try:
+        version = check_output(
+            ["git", "describe", "--always", "--dirty"], encoding="utf-8"
+        )
+    except CalledProcessError:
+        raise RuntimeError('Call to "git describe" failed!')
+
+    return version

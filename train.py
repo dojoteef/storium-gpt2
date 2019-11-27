@@ -15,6 +15,7 @@ import os
 import sys
 import glob
 import json
+import time
 import shutil
 import argparse
 import logging
@@ -32,12 +33,13 @@ from transformers import (
     WEIGHTS_NAME,
     get_linear_schedule_with_warmup,
 )
+from comet_ml import Experiment, ExistingExperiment
 
 from data.dataset import StoriumDataset
 from data.utils import get_dataloader
 from data.parallel import chunked_scattering
 from model import GPT2SegmentedModel
-from utils import tqdm_wrap_stdout
+from utils import tqdm_wrap_stdout, get_version_string
 import metrics
 
 
@@ -55,10 +57,12 @@ class Trainer:
         self.step = 0
         self.amp_initialized = False
         self.dataset: StoriumDataset
+        self.experiment: Experiment
         self.modules: Dict[str, Any] = {}
 
         self._initialize()
         self._initialize_metrics()
+        self._initialize_experiment()
 
     @property
     def use_fp16(self):
@@ -93,14 +97,16 @@ class Trainer:
         """
         self.metric_store = metrics.MetricStore()
         self.metric_store.add(
-            metrics.Metric("ppl", metrics.format_dynamic_float, max_history=1000)
+            metrics.Metric("lr", "format_scientific", "g", max_history=1)
         )
         self.metric_store.add(
-            metrics.Metric("loss", metrics.format_float, max_history=1000)
+            metrics.Metric("ppl", "format_dynamic_float", max_history=1000)
         )
         self.metric_store.add(
-            metrics.Metric("ntok", metrics.format_int, "a", max_history=1000)
+            metrics.Metric("ntok", "format_int", "a", max_history=1000)
         )
+        self.metric_store.add(metrics.Metric("oom", "format_int", "t"))
+        self.metric_store.add(metrics.Metric("nll", "format_float", max_history=1000))
 
     def _initialize(self):
         """
@@ -145,15 +151,78 @@ class Trainer:
             num_warmup_steps=self.args.optim.warmup_steps,
         )
 
-        if self.use_fp16:
-            model, optimizer = amp.initialize(
-                model.cuda(), optimizer, opt_level=self.args.optim.fp16_opt_level
-            )
-
         # Track the modules
         self.modules["model"] = model
         self.modules["optimizer"] = optimizer
         self.modules["scheduler"] = scheduler
+
+    def _initialize_experiment(self):
+        """
+        Initialize experiment tracking if specified
+        """
+        track = self.args.track
+        version = get_version_string()
+        if track and "-dirty" in version:
+            raise RuntimeError(
+                "Trying to track an experiment, but the workspace is dirty! "
+                "Commit your changes first, then try again."
+            )
+
+        api_key = None if track else ""
+        experiment_type = Experiment
+        experiment_args = [api_key]
+        if isinstance(track, str):
+            experiment_type = ExistingExperiment
+            if track.endswith(".guid"):
+                wait_count = 0
+                while not os.path.exists(track):
+                    wait_string = "..."[: wait_count % 4]
+                    wait_count += 1
+
+                    print(
+                        f"\r\033[KWaiting for experiment: {track} {wait_string}",
+                        end="",
+                    )
+                    time.sleep(1)
+
+                print(f"\r\033[KLoading experiment: {track}")
+                with open(track, "rt") as guid_file:
+                    experiment_args.append(guid_file.readline().strip())
+            else:
+                experiment_args.append(track)
+
+        self.experiment = experiment_type(
+            *experiment_args,
+            project_name="storium-baseline",
+            workspace="umass-nlp",
+            disabled=not track,
+            auto_metric_logging=False,
+            auto_output_logging=None,
+            auto_param_logging=False,
+            log_git_metadata=False,
+            log_git_patch=False,
+            log_env_details=False,
+            log_graph=False,
+            log_code=False,
+            parse_args=False,
+        )
+
+        if track and experiment_type == Experiment:
+            with open(
+                os.path.join(self.args.output_dir, "experiment.guid"), "wt"
+            ) as guid_file:
+                guid_file.write(self.experiment.id)
+
+        # This needs to be called separately to disable monkey patching of the
+        # ML frameworks which is on by default :(
+        self.experiment.disable_mp()
+
+        if experiment_type is Experiment:
+            self.experiment.log_parameter("version", version)
+            for name in ("data", "model", "optim"):
+                self.experiment.log_parameters(
+                    getattr(getattr(self.args, name, None), "__dict__", {}), prefix=name
+                )
 
     def save(self):
         """
@@ -193,6 +262,8 @@ class Trainer:
                 default=lambda obj: getattr(obj, "__dict__", {}),
             )
 
+        self.metric_store.save(os.path.join(checkpoint_dir, "train_metrics.json"))
+
         self.prune_checkpoints()
 
     def prune_checkpoints(self):
@@ -217,7 +288,9 @@ class Trainer:
         """
         train_config_filename = os.path.join(checkpoint_dir, "train_config.json")
         if not os.path.isfile(train_config_filename):
-            raise RuntimeError(f"Cannot find config file: {train_config_filename}")
+            raise RuntimeError(
+                f"Cannot find train config file: {train_config_filename}"
+            )
 
         train_state_filename = os.path.join(checkpoint_dir, "train_state.pt")
         if not os.path.isfile(train_state_filename):
@@ -227,7 +300,11 @@ class Trainer:
         if not os.path.isfile(model_state_filename):
             raise RuntimeError(f"Cannot find model state file: {model_state_filename}")
 
-        # First load the train config
+        train_metrics_filename = os.path.join(checkpoint_dir, "train_metrics.json")
+        if not os.path.isfile(train_metrics_filename):
+            raise RuntimeError(f"Cannot find metrics file: {train_metrics_filename}")
+
+        # Must load the train config first
         with open(train_config_filename, "rt") as config_file:
             self.args = json.load(
                 config_file, object_hook=lambda obj: argparse.Namespace(**obj)
@@ -257,6 +334,7 @@ class Trainer:
                 module.load_state_dict(train_state[name])
 
         self.step = train_state["step"]
+        self.metric_store.load(train_metrics_filename)
 
     def __call__(self):
         """
@@ -300,11 +378,23 @@ class Trainer:
 
             for step, batch in enumerate(batch_iterator, self.step + 1):
                 self.step = step
-                self.train_step(batch, model, optimizer, scheduler)
+                self.experiment.set_step(step)
+
+                try:
+                    self.train_step(batch, model, optimizer, scheduler)
+                except RuntimeError as rte:
+                    if "out of memory" in str(rte):
+                        self.metric_store["oom"].update(1)
+                    else:
+                        batch_iterator.close()
+                        raise rte
+
                 batch_iterator.set_description_str(get_description())
 
                 if self.args.save_steps > 0 and step % self.args.save_steps == 0:
                     self.save()
+
+            batch_iterator.close()
 
     def train_step(self, batch: Dict[str, Any], model, optimizer, scheduler):
         """
@@ -328,9 +418,14 @@ class Trainer:
         model.zero_grad()
 
         # Update our metrics
-        self.metric_store["loss"].update(loss.item())
+        self.metric_store["nll"].update(loss.item())
         self.metric_store["ntok"].update(batch["num_tokens"])
         self.metric_store["ppl"].update(torch.exp(loss).item())
+        self.metric_store["lr"].update(scheduler.get_lr()[0])
+
+        # Update the experiment logs as well
+        for name, metric in self.metric_store.items():
+            self.experiment.log_metric(name, metric.last_value)
 
 
 def define_train_args(
@@ -340,6 +435,15 @@ def define_train_args(
     Define arguments needed for the train command
     """
     parser = sub_parsers.add_parser("train", help="Train a model")
+    parser.add_argument(
+        "--track",
+        default=False,
+        const=True,
+        nargs="?",
+        help="Whether to track this experiment. If an experiment id is provided, it will track \
+        the existing experiment. If a filename ending with guid it is provided, it will wait \
+        until the file exists, then start tracking that experiment.",
+    )
     parser.add_argument(
         "--restore",
         type=str,
@@ -371,7 +475,7 @@ def define_train_args(
     data_group.add_argument(
         "--batch-size",
         type=int,
-        default=2048,
+        default=2560,  # max batch size that fits on a single 2080ti using fp16
         help="The batch size to use for training",
     )
     data_group.add_argument(
@@ -405,7 +509,7 @@ def define_train_args(
     optim_group.add_argument(
         "--max-steps",
         type=int,
-        default=500000,
+        default=100000,
         help="How many optimization steps to run.",
     )
     optim_group.add_argument(

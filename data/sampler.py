@@ -3,11 +3,45 @@ A module implementing various data samplers for datasets.
 """
 import heapq
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, NamedTuple, Tuple
 
 from torch.utils.data import Sampler
 
 from utils import ceildiv
+
+
+class DeviceBucket(NamedTuple):
+    """
+    Metadata for a device within a particular TokenBucket
+    """
+
+    total_length: int  # must be first so heap sorts based on it
+    device_id: int
+    max_length: int
+    sequence_ids: Tuple[int, ...] = tuple()
+    sequence_lengths: Tuple[int, ...] = tuple()
+
+    def empty(self):
+        """
+        Return an emptied device bucket
+        """
+        return DeviceBucket(0, self.device_id, self.max_length)
+
+    def add(self, sequence_id, sequence_length):
+        """
+        Returns a new DeviceBucket with the given sequence added
+        """
+        sequence_ids = self.sequence_ids + (sequence_id,)
+        sequence_lengths = self.sequence_lengths + (sequence_length,)
+        total_length = max(sequence_lengths) * len(sequence_ids)
+
+        return DeviceBucket(
+            total_length,
+            self.device_id,
+            self.max_length,
+            sequence_ids,
+            sequence_lengths,
+        )
 
 
 class TokenBucket(object):
@@ -20,23 +54,20 @@ class TokenBucket(object):
 
     def reset(self):
         """ Reset the bucket """
-        self.heap: List[Tuple[int, int, int, List[int]]] = [
-            (0, i, length, []) for i, length in enumerate(self.max_lengths)
+        self.heap: List[DeviceBucket] = [
+            DeviceBucket(0, i, length) for i, length in enumerate(self.max_lengths)
         ]
 
-    def try_add(self, sequence_id, sequence_lengths):
+    def try_add(self, sequence_id, sequence_length):
         """ Try to add the given example """
         full = []
         while self.heap:
-            total_length, device_id, max_length, sequence_ids = heapq.heappop(self.heap)
-            if total_length + sequence_lengths > max_length:
-                full.append((total_length, device_id, max_length, sequence_ids))
+            device_bucket = heapq.heappop(self.heap)
+            new_device_bucket = device_bucket.add(sequence_id, sequence_length)
+            if new_device_bucket.total_length > device_bucket.max_length:
+                full.append(device_bucket)
             else:
-                sequence_ids.append(sequence_id)
-                total_length += sequence_lengths
-                heapq.heappush(
-                    self.heap, (total_length, device_id, max_length, sequence_ids)
-                )
+                heapq.heappush(self.heap, new_device_bucket)
                 break
 
         if self.heap:
@@ -51,9 +82,7 @@ class TokenBucket(object):
     def extract_batch(self, iterable):
         """ Extract a batch from the iterable """
         _, batch = zip(
-            *sorted(
-                (device_id, sequence_ids) for _, device_id, _, sequence_ids in iterable
-            )
+            *sorted((bucket.device_id, bucket.sequence_ids) for bucket in iterable)
         )
 
         return batch

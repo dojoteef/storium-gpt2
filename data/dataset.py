@@ -262,17 +262,20 @@ class StoriumDataset(Dataset):
         strings.append(f" #entries={count}")
 
         if count:
-            length_min = min(len(e["tokens"]) for e in self.entries)
-            length_max = max(len(e["tokens"]) for e in self.entries)
-            length_avg = sum(len(e["tokens"]) for e in self.entries) / count
-
-            segments_min = min(len(e["segments"]) for e in self.entries)
-            segments_max = max(len(e["segments"]) for e in self.entries)
-            segments_avg = sum(len(e["segments"]) for e in self.entries) / count
+            token_lengths = tuple(len(e["tokens"]) for e in self.entries)
+            length_min = min(token_lengths)
+            length_max = max(token_lengths)
+            length_avg = sum(token_lengths) / count
 
             strings.append(
                 f" length (min={length_min},avg={length_avg:.2f},max={length_max})"
             )
+
+            segment_lengths = tuple(len(e["segments"]) for e in self.entries)
+            segments_min = min(segment_lengths)
+            segments_max = max(segment_lengths)
+            segments_avg = sum(segment_lengths) / count
+
             strings.append(
                 f" segments (min={segments_min},avg={segments_avg:.2f},max={segments_max})"
             )
@@ -281,22 +284,23 @@ class StoriumDataset(Dataset):
             tokenizer = self.get_tokenizer()
             for token in SpecialToken:
                 segment_id = tokenizer.convert_tokens_to_ids(token)
-                token_min = min(
-                    e.get("stats", {}).get(segment_id, 0) for e in self.entries
+                segment_stats = tuple(
+                    e["stats"][segment_id]
+                    for e in self.entries
+                    # Only count stats for the segment_id if it's actually used
+                    if segment_id in e.get("stats", {})
                 )
-                token_max = max(
-                    e.get("stats", {}).get(segment_id, 0) for e in self.entries
-                )
-                token_avg = (
-                    sum(e.get("stats", {}).get(segment_id, 0) for e in self.entries)
-                    / count
-                )
-
-                if token_min or token_max or token_avg:
+                if not segment_stats:
                     # Only include token level stats if they are actually present
-                    strings.append(
-                        f"  {token} (min={token_min},avg={token_avg:.2f},max={token_max})"
-                    )
+                    continue
+
+                token_min = min(segment_stats)
+                token_max = max(segment_stats)
+                token_avg = sum(segment_stats) / len(segment_stats)
+
+                strings.append(
+                    f"  {token} (min={token_min},avg={token_avg:.2f},max={token_max})"
+                )
         return "\n".join(strings)
 
 
@@ -305,18 +309,16 @@ def perform_preprocessing(args):
     Preprocess the dataset according to the passed in args
     """
     for split in SPLIT_NAMES:
-        with open(
-            os.path.join(args.data_directory, f"{split}_filenames.txt"), "rt"
-        ) as file:
+        with open(os.path.join(args.data_dir, f"{split}_filenames.txt"), "rt") as file:
             filenames = [
-                os.path.join(args.data_directory, filename).strip()
+                os.path.join(args.data_dir, filename).strip()
                 for filename in file.readlines()
             ]
 
         dataset = StoriumDataset(split, args.tokenizer, cache_dir=args.cache_dir)
         dataset.process(
             filenames,
-            args.output_directory,
+            args.output_dir,
             history=args.history,
             character_history=args.character_history,
             naive_layout=args.naive_layout,
@@ -324,7 +326,7 @@ def perform_preprocessing(args):
         )
 
         if logging.getLogger().getEffectiveLevel() <= logging.INFO:
-            dataset.load(args.output_directory)
+            dataset.load(args.output_dir)
 
         logging.info("%s %s", split, dataset.stats_str())
 

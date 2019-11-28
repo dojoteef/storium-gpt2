@@ -67,9 +67,15 @@ class SpecialToken(str, Enum):
         """
         Get the associated SpecialToken from the passed in string
         """
+        if name == "name":
+            # Handle this specially since Enum defines "name" as a string, but
+            # we want to use it to extract the field from the data
+            name = "name_field"
+
         return cls(f"<|{name.upper()}|>")
 
     missing = auto()  # denotes missing information
+    separator = auto()  # separator token at the beginning of each Segment
     character = auto()  # a character's biography
 
     # All the possible card types from <CardNamespace> in the Storium export
@@ -84,6 +90,10 @@ class SpecialToken(str, Enum):
     obstacle = auto()
     subplot = auto()
 
+    # generic attributes for cards, characters, etc
+    name_field = auto()  # cannot call it "name", as Enum defines it as well
+    description = auto()
+
     # Contextual card attributes
     failure_stakes = auto()
     success_stakes = auto()
@@ -95,8 +105,7 @@ class SpecialToken(str, Enum):
     conclusion = auto()
 
     # some notions of ordering
-    current = auto()
-    previous = auto()
+    previous = auto()  # can stack, e.g. previous + previous => timestep t-2
 
     # some notions of authorship
     narrator = auto()  # can stack,  e.g. previous + narrator
@@ -133,6 +142,7 @@ class Segment(tuple):
 
     # metadata
     segment_ids: Tuple[int, ...]
+    separator: Optional[int]
 
     # Layout related variables
     trim: Trim
@@ -141,10 +151,15 @@ class Segment(tuple):
     preferred_length: int
     length: Optional[Variable]
 
+    # A constant defining the min length of a text segment (it can be shorter
+    # if the underlying data is shorter than than constant).
+    MIN_LENGTH = 100
+
     def __new__(
         cls,
         *iterable: Union[Iterable[int], Iterable["Segment"]],
         segment_ids: Iterable[int] = tuple(),
+        separator: Optional[int] = None,
         preferred_length: int = 0,
         trim: Trim = Trim.end,
     ):
@@ -159,6 +174,10 @@ class Segment(tuple):
         self.constrained = False
         self.naive_max_length = -1
         self.preferred_length = preferred_length
+
+        # Since the separator effects the length, we must set it before
+        # iterating over the Segment below.
+        self.separator = separator
 
         all_ints = all(isinstance(t, int) for t in self)
         if not (all_ints or all(isinstance(t, Segment) for t in self)):
@@ -179,14 +198,14 @@ class Segment(tuple):
         return self
 
     @property
-    def constraints(self) -> List[Constraint]:
+    def hard_constraints(self) -> List[Constraint]:
         """
-        Return a list of constraints defining the length of the segment
+        Return a list of hard constraints defining the length of the segment
         """
         constraints: List[Constraint] = []
         for segment in self:
             if isinstance(segment, Segment):
-                constraints.extend(segment.constraints)
+                constraints.extend(segment.hard_constraints)
 
         if self.constrained and self.length:
             # Get the underlying length of the data
@@ -198,15 +217,57 @@ class Segment(tuple):
             # Cannot be longer than the underlying length
             constraints.append((self.length <= length) | strength.required)
 
+        return constraints
+
+    @property
+    def medium_constraints(self) -> List[Constraint]:
+        """
+        Return a list of constraints defining the length of the segment
+        """
+        constraints: List[Constraint] = []
+        for segment in self:
+            if isinstance(segment, Segment):
+                constraints.extend(segment.medium_constraints)
+
+        if self.constrained and self.length:
+            # Get the underlying length of the data
+            length = self.unconstrained_length
+
+            # Resist shrinking below the underlying length
+            constraints.append((self.length >= length) | strength.medium)
+
             # Try to stay close to the underlying length
             constraints.append((self.length == length) | strength.medium)
 
-            # Resist shrinking below underlying length
-            constraints.append((self.length >= length) | strength.medium)
+            # Resist shrinking below the min length a little more strongly
+            constraints.append((self.length >= Segment.MIN_LENGTH) | strength.medium)
 
-            # Strongly try to stay close to the preferred length
+        return constraints
+
+    @property
+    def strong_constraints(self) -> List[Constraint]:
+        """
+        Return a list of constraints defining the length of the segment
+        """
+        constraints: List[Constraint] = []
+        for segment in self:
+            if isinstance(segment, Segment):
+                constraints.extend(segment.strong_constraints)
+
+        if self.constrained and self.length:
+            # Get the underlying length of the data
+            length = self.unconstrained_length
+
+            # Very strongly try to stay close to the preferred length
             if self.preferred_length:
-                constraints.append((self.length == length) | strength.strong)
+                constraints.append(
+                    (self.length == self.preferred_length) | strength.create(10, 0, 0)
+                )
+            else:
+                # Try to stay close to the min length a little more strongly
+                constraints.append(
+                    (self.length == Segment.MIN_LENGTH) | strength.strong
+                )
 
         return constraints
 
@@ -218,7 +279,7 @@ class Segment(tuple):
         unconstrained_length = self.unconstrained_length
         if self.naive_max_length >= 0:
             if not self.preferred_length:
-                return min(unconstrained_length, 100)
+                return min(unconstrained_length, Segment.MIN_LENGTH)
 
             return unconstrained_length
 
@@ -231,16 +292,33 @@ class Segment(tuple):
         """
         Allow __getitem__ to support constraining the underlying sequence
         """
-        return super().__getitem__(self.constrained_slice)[key]
+        return self._constrained_sequence[key]
 
     def __iter__(self):
         """
         Iterate over the constrained Segment
         """
-        return iter(super().__getitem__(self.constrained_slice))
+        return iter(self._constrained_sequence)
 
     @property
-    def constrained_slice(self) -> slice:
+    def _constrained_sequence(self):
+        """
+        Return the constrained segment
+        """
+        sequence = super().__getitem__(self._constrained_slice)
+        if self.separator is not None:
+            # If there is a separator it is always the first token
+            sequence = (self.separator,) + sequence
+
+            # By virtue of adding the separator, we may need to remove the last
+            # element of the sequence, if it would cause the constrained
+            # sequence to be too long
+            sequence = sequence[: len(self)]
+
+        return sequence
+
+    @property
+    def _constrained_slice(self) -> slice:
         """
         Compute the constrained slice for the Segment
         """
@@ -264,7 +342,7 @@ class Segment(tuple):
         """
         Get the full unconstrained length of the Segment
         """
-        return super().__len__()
+        return super().__len__() + (0 if self.separator is None else 1)
 
     @property
     def token_segments(self):
@@ -294,16 +372,37 @@ class Segment(tuple):
                 yield segment, self.segment_ids
 
     @property
-    def lengths(self):
+    def length_variables(self):
         """
         A generator which yields all the length variables within the segment recursively
         """
         for segment in self:
             if isinstance(segment, Segment):
-                yield from segment.lengths
+                yield from segment.length_variables
 
         if self.length:
             yield self.length
+
+    @property
+    def num_tokens(self):
+        """
+        Get the total number of tokens encapsulated by this Segment
+        """
+        num_tokens = 0
+        for segment in self:
+            if not isinstance(segment, Segment):
+                # Since we do not mix tokens with nested Segment, we exit early
+                # if we do not find a Segment as a minor optimization.
+                break
+
+            num_tokens += segment.num_tokens
+
+        if not num_tokens:
+            # If we didn't count any tokens, then this could be an empty
+            # Segment, or its just make up of tokens without nested Segments.
+            num_tokens += self.unconstrained_length
+
+        return num_tokens
 
     def _mark_constrained(self, constrained: bool, max_length: int = -1):
         """
@@ -327,10 +426,27 @@ class Segment(tuple):
         DO NOT CALL THIS DIRECTLY!
         """
         solver = Solver()
-        for constraint in self.constraints:
+
+        # First add the hard constraints
+        for constraint in self.hard_constraints:
             solver.addConstraint(constraint)
 
-        solver.addConstraint(sum(self.lengths) <= max_length)
+        # Want it to be exactly equal to the minimum of the max_length and
+        # underlying number of tokens. This makes sure the constraint solver
+        # doesn't try to short change and find a solution that uses less than
+        # the available length.
+        solver.addConstraint(
+            sum(self.length_variables) == min(max_length, self.num_tokens)
+        )
+
+        # Then add the medium constraints
+        for constraint in self.strong_constraints:
+            solver.addConstraint(constraint)
+
+        # Finally add the strong constraints
+        for constraint in self.strong_constraints:
+            solver.addConstraint(constraint)
+
         solver.updateVariables()
 
     @contextmanager
@@ -587,18 +703,19 @@ class Preprocessor:
     def encode_special(
         self,
         string_or_list: Union[str, List[str]],
-        special_tokens: Iterable[SpecialToken] = tuple(),
+        special_token: Optional[SpecialToken] = None,
         preferred_length: int = 0,
         trim: Trim = Trim.end,
     ) -> Segment:
         """
         After encoding with the tokenizer, this creates, create a Segment and
-        assign the special_tokens if specified.
+        assign the special_token if specified.
         """
         return Segment(
             self.encode(string_or_list),
-            segment_ids=tuple(self.tokenizer.convert_tokens_to_ids(special_tokens))
-            if special_tokens
+            separator=self.tokenizer.convert_tokens_to_ids(SpecialToken.separator),
+            segment_ids=[self.tokenizer.convert_tokens_to_ids(special_token)]
+            if special_token
             else tuple(),
             preferred_length=preferred_length,
             trim=trim,
@@ -608,31 +725,17 @@ class Preprocessor:
         """
         Create the summary for a character
         """
-        strings: List[str] = []
-        if character:
-            strings.append(extract_string("name", character))
-            strings.append(extract_string("description", character))
-        else:
-            strings.append(SpecialToken.missing)
-
-        return self.encode_special(strings, (SpecialToken.character,))
-
-    def summarize_cards(self, cards: List[Dict[str, Any]],) -> Segment:
-        """
-        Create the summary of a card
-        """
         return Segment(
-            # we are not passing null for the card, so we can ignore mypy's
-            # concern that we may be adding a null value
-            (
-                self.summarize_card(  # type: ignore
-                    card
+            iter(
+                self.encode_special(
+                    extract_string(field, character), SpecialToken.from_string(field),
                 )
-                for card in cards
-            )
+                for field in ("name", "description")
+            ),
+            segment_ids=[self.tokenizer.convert_tokens_to_ids(SpecialToken.character),],
         )
 
-    def summarize_card(self, card: Optional[Dict[str, Any]],) -> Optional[Segment]:
+    def summarize_card(self, card: Optional[Dict[str, Any]]) -> Segment:
         """
         Create the summary of a card.
 
@@ -640,24 +743,16 @@ class Preprocessor:
         "failure_stakes" as well.
         """
         if not card:
-            return None
-
-        summary = [
-            self.encode_special(
-                [extract_string("name", card), extract_string("description", card)],
-            )
-        ]
-
-        for field in ("success_stakes", "failure_stakes"):
-            if card.get(field):
-                summary.append(
-                    self.encode_special(
-                        extract_string(field, card), (SpecialToken.from_string(field),),
-                    )
-                )
+            return Segment()
 
         return Segment(
-            summary,
+            iter(
+                self.encode_special(
+                    extract_string(field, card), SpecialToken.from_string(field),
+                )
+                for field in ("name", "description", "success_stakes", "failure_stakes")
+                if card.get(field)
+            ),
             segment_ids=tuple(
                 self.tokenizer.convert_tokens_to_ids(
                     (SpecialToken.from_string(card["namespace"]),)
@@ -665,21 +760,24 @@ class Preprocessor:
             ),
         )
 
-    def summarize_entry(self, entry: Dict[str, Any]) -> Optional[Segment]:
+    def summarize_cards(self, cards: List[Dict[str, Any]]) -> Segment:
+        """
+        Create the summary of a card
+        """
+        return Segment(iter(self.summarize_card(card) for card in cards))
+
+    def summarize_entry(self, entry: Dict[str, Any]) -> Segment:
         """
         Create the summary of an entry
         """
-        if not entry:
-            return None
-
         summary = []
         entry_type = entry["format"]
         if entry_type == "move":
-            challenge = self.summarize_card(entry.get("target_challenge_card"),)
+            challenge = self.summarize_card(entry.get("target_challenge_card"))
             if challenge:
                 summary.append(challenge)
 
-            cards = self.summarize_cards(entry.get("cards_played_on_challenge", []),)
+            cards = self.summarize_cards(entry.get("cards_played_on_challenge", []))
             if cards:
                 summary.append(cards)
         elif entry_type == "establishment":
@@ -687,7 +785,7 @@ class Preprocessor:
             if place:
                 summary.append(place)
         elif entry_type == "addition":
-            cards = self.summarize_cards(entry.get("challenge_cards", []),)
+            cards = self.summarize_cards(entry.get("challenge_cards", []))
             if cards:
                 summary.append(cards)
 
@@ -717,14 +815,14 @@ class Preprocessor:
 
         encoded_text = self.encode_special(
             text,
-            (SpecialToken.from_string(entry["format"]),),
+            SpecialToken.from_string(entry["format"]),
             preferred_length=self.preferred_entry_length,
         )
         summary = self.summarize_entry(entry)
         if not summary:
             summary = self.encode_special(
                 text,
-                (SpecialToken.from_string(entry["format"]),),
+                SpecialToken.from_string(entry["format"]),
                 trim=Trim.start,  # Treat the end of the entry text as a summary
             )
 
@@ -891,14 +989,13 @@ class Preprocessor:
 
         entry_summary = entry_info.summary
         if prev_entry_ids:
-            # If we used any history, then mark this entry as the current entry
+            # If we used any history, then mark this entry as written by the
+            # same character
             entry_summary = Segment(
                 entry_info.summary,
-                segment_ids=tuple(
-                    self.tokenizer.convert_tokens_to_ids(
-                        (SpecialToken.current, SpecialToken.same_character)
-                    )
-                ),
+                segment_ids=[
+                    self.tokenizer.convert_tokens_to_ids(SpecialToken.same_character)
+                ],
             )
         summary.append(entry_summary)
 
@@ -1067,11 +1164,11 @@ def perform_split(args):
     Split the dataset according to the passed in args
     """
     splits = split_dataset(
-        args.data_directory, (args.train_split, args.validation_split, args.test_split)
+        args.data_dir, (args.train_split, args.validation_split, args.test_split)
     )
     for split, filenames in zip(SPLIT_NAMES, splits):
         with open(
-            os.path.join(args.output_directory, f"{split}_filenames.txt"), "wt"
+            os.path.join(args.output_dir, f"{split}_filenames.txt"), "wt"
         ) as split_file:
             split_file.write("\n".join(filenames))
 

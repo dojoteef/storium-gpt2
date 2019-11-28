@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from data.dataset import define_preprocess_args
 from data.preprocess import define_split_args
+from evaluate import define_eval_args
 from train import define_train_args
 
 
@@ -37,6 +38,7 @@ training provide directory of preprocessed data.
     sub_parsers = parser.add_subparsers()
     define_split_args(sub_parsers)
     define_preprocess_args(sub_parsers)
+    define_eval_args(sub_parsers)
     define_train_args(sub_parsers)
 
     parser.add_argument(

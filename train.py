@@ -1,21 +1,10 @@
 """
 Baseline training script
-
-This is the training script for our baseline model. We will generate at most
-256 tokens of an entry at test time, so we allow the context to be at most 768
-tokens, as GPT2 supports a maximum length of 1024 tokens for backpropagation.
-
-Our baseline model supports using the following information as context:
-- Cards played
-- Character information
-- Challenge being addressed
-- Location card of the current scene
 """
 import os
 import sys
 import glob
 import json
-import time
 import shutil
 import argparse
 import logging
@@ -33,13 +22,13 @@ from transformers import (
     WEIGHTS_NAME,
     get_linear_schedule_with_warmup,
 )
-from comet_ml import Experiment, ExistingExperiment
 
 from data.dataset import StoriumDataset
 from data.utils import get_dataloader
 from data.parallel import chunked_scattering
+from experiment import initialize_experiment
 from model import GPT2SegmentedModel
-from utils import tqdm_wrap_stdout, get_version_string
+from utils import tqdm_wrap_stdout
 import metrics
 
 
@@ -57,12 +46,10 @@ class Trainer:
         self.step = 0
         self.amp_initialized = False
         self.dataset: StoriumDataset
-        self.experiment: Experiment
         self.modules: Dict[str, Any] = {}
 
         self._initialize()
         self._initialize_metrics()
-        self._initialize_experiment()
 
     @property
     def use_fp16(self):
@@ -107,6 +94,7 @@ class Trainer:
         )
         self.metric_store.add(metrics.Metric("oom", "format_int", "t"))
         self.metric_store.add(metrics.Metric("nll", "format_float", max_history=1000))
+        self.experiment = initialize_experiment(self.args, ("data", "model", "optim"))
 
     def _initialize(self):
         """
@@ -155,74 +143,6 @@ class Trainer:
         self.modules["model"] = model
         self.modules["optimizer"] = optimizer
         self.modules["scheduler"] = scheduler
-
-    def _initialize_experiment(self):
-        """
-        Initialize experiment tracking if specified
-        """
-        track = self.args.track
-        version = get_version_string()
-        if track and "-dirty" in version:
-            raise RuntimeError(
-                "Trying to track an experiment, but the workspace is dirty! "
-                "Commit your changes first, then try again."
-            )
-
-        api_key = None if track else ""
-        experiment_type = Experiment
-        experiment_args = [api_key]
-        if isinstance(track, str):
-            experiment_type = ExistingExperiment
-            if track.endswith(".guid"):
-                wait_count = 0
-                while not os.path.exists(track):
-                    wait_string = "..."[: wait_count % 4]
-                    wait_count += 1
-
-                    print(
-                        f"\r\033[KWaiting for experiment: {track} {wait_string}",
-                        end="",
-                    )
-                    time.sleep(1)
-
-                print(f"\r\033[KLoading experiment: {track}")
-                with open(track, "rt") as guid_file:
-                    experiment_args.append(guid_file.readline().strip())
-            else:
-                experiment_args.append(track)
-
-        self.experiment = experiment_type(
-            *experiment_args,
-            project_name="storium-baseline",
-            workspace="umass-nlp",
-            disabled=not track,
-            auto_metric_logging=False,
-            auto_output_logging=None,
-            auto_param_logging=False,
-            log_git_metadata=False,
-            log_git_patch=False,
-            log_env_details=False,
-            log_graph=False,
-            log_code=False,
-            parse_args=False,
-        )
-
-        if track and experiment_type == Experiment:
-            with open(
-                os.path.join(self.args.output_dir, "experiment.guid"), "wt"
-            ) as guid_file:
-                guid_file.write(self.experiment.id)
-
-        # This needs to be called separately to disable monkey patching of the
-        # ML frameworks which is on by default :(
-        self.experiment.disable_mp()
-
-        if experiment_type is Experiment:
-            self.experiment.log_parameter("version", version)
-            for name in ("data", "model", "optim"):
-                self.experiment.log_parameters(
-                    getattr(getattr(self.args, name, None), "__dict__", {}), prefix=name
-                )
 
     def save(self):
         """

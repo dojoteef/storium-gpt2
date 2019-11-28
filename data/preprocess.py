@@ -255,9 +255,6 @@ class Segment(tuple):
                 constraints.extend(segment.strong_constraints)
 
         if self.constrained and self.length:
-            # Get the underlying length of the data
-            length = self.unconstrained_length
-
             # Very strongly try to stay close to the preferred length
             if self.preferred_length:
                 constraints.append(

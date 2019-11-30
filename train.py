@@ -214,6 +214,9 @@ class Trainer:
             os.path.basename(new_best_checkpoint), best_checkpoint_path,
         )
 
+        # Save the latest metrics
+        self.metric_store.save(os.path.join(new_best_checkpoint, "train_metrics.json"))
+
     def prune_checkpoints(self) -> bool:
         """
         Remove oldest checkpoints first if we are above the max checkpoints limit

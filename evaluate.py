@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict
 from contextlib import ExitStack
 
+import comet_ml  # must be before torch!
 import torch
 from tqdm import tqdm
 from transformers import GPT2Config

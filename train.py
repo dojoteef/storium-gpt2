@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from itertools import cycle, islice
 from contextlib import ExitStack
 
-import comet_ml  # must be before torch!
+import comet_ml  # must be before torch! pylint:disable=unused-import
 import torch
 from apex import amp
 from torch import nn

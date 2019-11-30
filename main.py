@@ -5,10 +5,11 @@ import argparse
 import logging
 from typing import Any, Dict
 
+# import train first, so that comet initializes before torch
+from train import define_train_args
+from evaluate import define_eval_args
 from data.dataset import define_preprocess_args
 from data.preprocess import define_split_args
-from evaluate import define_eval_args
-from train import define_train_args
 
 
 def parse_args() -> argparse.Namespace:

@@ -6,10 +6,10 @@ import sys
 import json
 import argparse
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from contextlib import ExitStack
 
-import comet_ml  # must be before torch! pylint:disable=unused-import
+from comet_ml import Experiment  # must be before torch!
 import torch
 from tqdm import tqdm
 from transformers import GPT2Config
@@ -40,6 +40,7 @@ class Evaluator:
         self.amp_initialized = False
         self.dataset: StoriumDataset
         self.model: StaticDataParallel
+        self.experiment: Experiment
 
         self.reset_metrics()
 
@@ -53,7 +54,15 @@ class Evaluator:
         self.metric_store.add(metrics.Metric("nll", "format_float"))
         self.metric_store.add(metrics.Metric("oom", "format_int", "t"))
 
-        self.experiment = initialize_experiment(self.args, ("data",))
+    def initialize_experiment(self, experiment: Optional[Experiment] = None):
+        """
+        Initialize the experiment
+        """
+        self.experiment = (
+            initialize_experiment(self.args, ("data",))
+            if experiment is None
+            else experiment
+        )
 
     def load(self, checkpoint_dir):
         """
@@ -249,6 +258,7 @@ def perform_eval(args):
     evaluator = Evaluator(args)
     evaluator.load(args.restore)
     evaluator.load_dataset(args.split)
+    evaluator.initialize_experiment()
     evaluator()
 
     evaluator.save()

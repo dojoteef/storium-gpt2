@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from itertools import cycle, islice
 from contextlib import ExitStack
 
-import comet_ml  # must be before torch! pylint:disable=unused-import
+from comet_ml import Experiment  # must be before torch!
 import torch
 from apex import amp
 from torch import nn
@@ -50,6 +50,7 @@ class Trainer:
         self.amp_initialized = False
         self.dataset: StoriumDataset
         self.modules: Dict[str, Any] = {}
+        self.experiment: Experiment
 
         self._initialize()
         self._initialize_metrics()
@@ -355,6 +356,7 @@ class Trainer:
                 evaluator.model = model
                 evaluator.train_args = self.args
                 evaluator.load_dataset("validation")
+                evaluator.initialize_experiment(experiment=self.experiment)
 
                 # Make sure we are tracking validation nll
                 self.metric_store.add(metrics.Metric("vnll", "format_float", "g(m)"))

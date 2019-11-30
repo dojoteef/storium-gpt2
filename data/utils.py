@@ -37,7 +37,9 @@ def get_dataloader(
         )
     elif config.batch_method == "example":
         sampler_fn = RandomSampler if shuffle else SequentialSampler
-        batch_sampler = BatchSampler(sampler_fn(dataset), config.batch_size, False)
+        batch_sampler = BatchSampler(
+            sampler_fn(dataset), num_devices * config.batch_size, False
+        )
     else:
         raise ValueError("Unknown batch method!")
 
@@ -45,7 +47,7 @@ def get_dataloader(
         dataset,
         batch_sampler=batch_sampler,
         collate_fn=dataset.collate,
-        num_workers=num_devices,
+        num_workers=1,
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
     )

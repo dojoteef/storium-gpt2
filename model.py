@@ -19,9 +19,15 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
         """
         return self.transformer.wte
 
-    def forward(self, inputs: Dict[str, Any]):  # pylint:disable=arguments-differ
+    def forward(
+        self, inputs: Dict[str, Any], loss_only=False
+    ):  # pylint:disable=arguments-differ
         """
-        Compose the segments together and call the base class
+        Compose the segments together and call the base class. Also include an
+        argument to control whether to only output the loss. By default the
+        huggingface/transformer models output their hidden states as well,
+        which is a lot of data to transfer, and thus slows down
+        training/evaluation.
         """
         tokens = inputs["tokens"]
         segment_masks = inputs["segment_masks"].unsqueeze(-1)
@@ -30,4 +36,5 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
             torch.max(tokens, tokens.new_zeros(1))
         ) + segments_embeds.sum(1)
 
-        return super().forward(inputs_embeds=inputs_embeds, labels=tokens)
+        outputs = super().forward(inputs_embeds=inputs_embeds, labels=tokens)
+        return outputs[:1] if loss_only else outputs

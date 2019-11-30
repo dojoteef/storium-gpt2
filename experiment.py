@@ -49,11 +49,11 @@ def initialize_experiment(
 
     experiment = experiment_type(
         *experiment_args,
-        project_name="storium-baseline",
+        project_name="storium-gpt2-baselines",
         workspace="umass-nlp",
         disabled=not track,
         auto_metric_logging=False,
-        auto_output_logging=None,
+        auto_output_logging=False,
         auto_param_logging=False,
         log_git_metadata=False,
         log_git_patch=False,

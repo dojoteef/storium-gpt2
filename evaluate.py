@@ -10,13 +10,12 @@ from typing import Any, Dict
 from contextlib import ExitStack
 
 import torch
-from torch import nn
 from tqdm import tqdm
 from transformers import GPT2Config
 
 from data.dataset import StoriumDataset
 from data.utils import get_dataloader
-from data.parallel import chunked_scattering
+from data.parallel import chunked_scattering, StaticDataParallel
 from data.preprocess import SPLIT_NAMES
 from experiment import initialize_experiment
 from model import GPT2SegmentedModel
@@ -34,16 +33,16 @@ class Evaluator:
         Initialize the evaluator
         """
         self.args = args
+        self.train_args: argparse.Namespace
 
-        self.step = 0
+        self.best_nll = float("inf")
         self.amp_initialized = False
         self.dataset: StoriumDataset
-        self.model: nn.DataParallel
+        self.model: StaticDataParallel
 
-        self._initialize()
-        self._initialize_metrics()
+        self.reset_metrics()
 
-    def _initialize_metrics(self):
+    def reset_metrics(self):
         """
         Initialize the metrics
         """
@@ -55,13 +54,10 @@ class Evaluator:
 
         self.experiment = initialize_experiment(self.args, ("data",))
 
-    def _initialize(self):
+    def load(self, checkpoint_dir):
         """
-        Load the dataset, model, etc
+        Load the model, etc
         """
-        cache_dir = self.args.cache_dir
-        checkpoint_dir = self.args.restore
-
         logging.info("Loading train config")
         train_config_filename = os.path.join(checkpoint_dir, "train_config.json")
         if not os.path.isfile(train_config_filename):
@@ -71,26 +67,31 @@ class Evaluator:
 
         # Must load the train config first
         with open(train_config_filename, "rt") as config_file:
-            train_args = json.load(
+            self.train_args = json.load(
                 config_file, object_hook=lambda obj: argparse.Namespace(**obj)
             )
 
-        logging.info("Loading dataset")
-        self.dataset = StoriumDataset(
-            self.args.split, train_args.model.model_name, cache_dir=cache_dir
-        )
-        self.dataset.load(self.args.data_dir)
-
         logging.info("Loading model")
-        config = GPT2Config.from_pretrained(self.args.restore)
+        config = GPT2Config.from_pretrained(checkpoint_dir)
         model = GPT2SegmentedModel.from_pretrained(
-            self.args.restore, config=config, cache_dir=cache_dir
+            checkpoint_dir, config=config, cache_dir=self.args.cache_dir
         )
 
         if torch.cuda.is_available():
             model = model.cuda()
 
-        self.model = nn.DataParallel(model)
+        self.model = StaticDataParallel(model)
+
+    def load_dataset(self, split: str):
+        """
+        Load the dataset
+        """
+        if not hasattr(self, "dataset") or self.dataset.split != split:
+            logging.info("Loading %s dataset", split)
+            self.dataset = StoriumDataset(
+                split, self.train_args.model.model_name, cache_dir=self.args.cache_dir,
+            )
+            self.dataset.load(self.args.data_dir)
 
     def save(self):
         """
@@ -102,24 +103,21 @@ class Evaluator:
 
         self.metric_store.save(os.path.join(self.args.output_dir, "eval_metrics.json"))
 
-    def __call__(self):
+    def __call__(self) -> float:
         """
         Run the evaluation!
         """
         dataloader = get_dataloader(
-            self.args.data,
-            self.dataset,
-            num_devices=len(self.model.device_ids),
-            shuffle=True,
+            self.args.data, self.dataset, num_devices=len(self.model.device_ids)
         )
 
         def get_description():
-            return f"Train {self.metric_store}"
+            return f"Eval {self.metric_store}"
 
         batch_iterator = tqdm(
             dataloader,
             unit="batch",
-            initial=self.step + 1,
+            initial=1,
             dynamic_ncols=True,
             desc=get_description(),
             file=sys.stdout,  # needed to make tqdm_wrap_stdout work
@@ -131,10 +129,7 @@ class Evaluator:
             stack.enter_context(chunked_scattering())
             # pylint:enable=no-member
 
-            for step, batch in enumerate(batch_iterator, self.step + 1):
-                self.step = step
-                self.experiment.set_step(step)
-
+            for batch in batch_iterator:
                 try:
                     self.eval_step(batch)
                 except RuntimeError as rte:
@@ -148,12 +143,15 @@ class Evaluator:
 
             batch_iterator.close()
 
+        return self.metric_store["nll"].average
+
     def eval_step(self, batch: Dict[str, Any]):
         """
         Run a single step of evaluation using the passed in batch
         """
-        self.model.eval()
-        loss = self.model(batch)[0]
+        with torch.no_grad():
+            self.model.eval()
+            loss = self.model(batch, loss_only=True)[0]
 
         # If there are multiple GPUs, then this will be a vector of losses, so
         # sum over the GPUs first
@@ -164,9 +162,23 @@ class Evaluator:
         self.metric_store["ntok"].update(batch["num_tokens"])
         self.metric_store["ppl"].update(torch.exp(loss).item())
 
-        # Update the experiment logs as well
-        for name, metric in self.metric_store.items():
-            self.experiment.log_metric(name, metric.last_value)
+    def log_experiment(self):
+        """
+        Log the experiment metrics
+        """
+        if self.dataset.split == "train":
+            # Do not update experiment logs if running evaluation over the
+            # training set
+            return
+
+        experiment_mode = (
+            self.experiment.validate
+            if self.dataset.split == "validation"
+            else self.experiment.test
+        )
+        with experiment_mode():
+            for name, metric in self.metric_store.items():
+                self.experiment.log_metric(name, metric.average)
 
 
 def define_eval_args(
@@ -202,7 +214,8 @@ def define_eval_args(
     data_group.add_argument(
         "--batch-size",
         type=int,
-        default=2560,  # max batch size that fits on a single 2080ti using fp16
+        default=11 * 1024,  # max batch size that fits on a single 2080ti
+        # without going oom.
         help="The batch size to use for evaluation",
     )
     data_group.add_argument(
@@ -233,6 +246,9 @@ def perform_eval(args):
     Main entry point for eval
     """
     evaluator = Evaluator(args)
+    evaluator.load(args.restore)
+    evaluator.load_dataset(args.split)
     evaluator()
 
     evaluator.save()
+    evaluator.log_experiment()

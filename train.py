@@ -3,12 +3,13 @@ Baseline training script
 """
 import os
 import sys
+import copy
 import glob
 import json
 import shutil
 import argparse
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from itertools import cycle, islice
 from contextlib import ExitStack
 
@@ -26,9 +27,10 @@ from transformers import (
 from data.dataset import StoriumDataset
 from data.utils import get_dataloader
 from data.parallel import chunked_scattering
+from evaluate import Evaluator
 from experiment import initialize_experiment
 from model import GPT2SegmentedModel
-from utils import tqdm_wrap_stdout
+from utils import tqdm_wrap_stdout, tqdm_unwrap_stdout
 import metrics
 
 
@@ -144,7 +146,7 @@ class Trainer:
         self.modules["optimizer"] = optimizer
         self.modules["scheduler"] = scheduler
 
-    def save(self):
+    def save(self) -> bool:
         """
         Save all the tracked modules
         """
@@ -183,12 +185,11 @@ class Trainer:
             )
 
         self.metric_store.save(os.path.join(checkpoint_dir, "train_metrics.json"))
+        return self.prune_checkpoints()
 
-        self.prune_checkpoints()
-
-    def prune_checkpoints(self):
+    def on_new_best(self):
         """
-        Remove oldest checkpoints first if we are above the max checkpoints limit
+        Mark the latest checkpoint as the best
         """
         if self.args.max_checkpoints <= 0:
             return
@@ -198,9 +199,52 @@ class Trainer:
             (int(os.path.basename(c).split("-")[1]), c) for c in checkpoints
         )
 
+        new_best_checkpoint = sorted_checkpoints[-1][1]
+        logging.info("New best %s", new_best_checkpoint)
+        best_checkpoint_path = os.path.join(self.args.output_dir, "best-checkpoint")
+        try:
+            # Remove the old best checkpoint path, otherwise it will error when
+            # trying to create the symlink
+            os.remove(best_checkpoint_path)
+        except FileNotFoundError:
+            pass
+
+        # Just use a symlink to denote the best checkpoint
+        os.symlink(
+            os.path.basename(new_best_checkpoint), best_checkpoint_path,
+        )
+
+    def prune_checkpoints(self) -> bool:
+        """
+        Remove oldest checkpoints first if we are above the max checkpoints limit
+        """
+        if self.args.max_checkpoints <= 0:
+            return False
+
+        checkpoints = glob.glob(os.path.join(self.args.output_dir, "checkpoint-*"))
+        sorted_checkpoints = sorted(
+            (int(os.path.basename(c).split("-")[1]), c) for c in checkpoints
+        )
+
+        try:
+            # Try to read the best checkpoint if it exists, otherwise set it to None
+            best_checkpoint_path: Optional[str] = os.readlink(
+                os.path.join(self.args.output_dir, "best-checkpoint")
+            )
+        except FileNotFoundError:
+            best_checkpoint_path = None
+
         for _, checkpoint in sorted_checkpoints[: -self.args.max_checkpoints]:
+            if os.path.basename(checkpoint) == best_checkpoint_path:
+                # If the best checkpoint is about to removed, then we should
+                # stop early
+                logging.info("Not removing best checkpoint %s", checkpoint)
+                return False
+
             logging.info("Removing checkpoint %s", checkpoint)
             shutil.rmtree(checkpoint)
+
+        return True
 
     def load(self, checkpoint_dir: str):
         """
@@ -294,7 +338,25 @@ class Trainer:
             # pylint:disable=no-member
             stack.enter_context(tqdm_wrap_stdout())
             stack.enter_context(chunked_scattering())
+            stack.enter_context(self.experiment.train())
             # pylint:enable=no-member
+
+            if self.args.optim.early_stopping:
+                # If using early stopping, must evaluate regularly to determine
+                # if training should stop early, so setup an Evaluator
+                eval_args = copy.deepcopy(self.args)
+                eval_args.data.batch_size = self.args.optim.eval_batch_size
+
+                evaluator = Evaluator(eval_args)
+                evaluator.model = model
+                evaluator.train_args = self.args
+                evaluator.load_dataset("validation")
+
+                # Make sure we are tracking validation nll
+                self.metric_store.add(metrics.Metric("vnll", "format_float", "g(m)"))
+
+                # And store a local variable for easy access
+                vnll_metric = self.metric_store["vnll"]
 
             for step, batch in enumerate(batch_iterator, self.step + 1):
                 self.step = step
@@ -312,7 +374,17 @@ class Trainer:
                 batch_iterator.set_description_str(get_description())
 
                 if self.args.save_steps > 0 and step % self.args.save_steps == 0:
-                    self.save()
+                    if not self.save():
+                        logging.info("Stopping early")
+                        break
+
+                    if self.args.optim.early_stopping:
+                        evaluator.reset_metrics()
+                        with tqdm_unwrap_stdout():
+                            vnll = evaluator()
+                            vnll_metric.update(vnll)
+                            if vnll == vnll_metric.min:
+                                self.on_new_best()
 
             batch_iterator.close()
 
@@ -321,7 +393,7 @@ class Trainer:
         Run a single step of training using the passed in batch
         """
         model.train()
-        loss = model(batch)[0]
+        loss = model(batch, loss_only=True)[0]
 
         # If there are multiple GPUs, then this will be a vector of losses, so
         # sum over the GPUs first
@@ -372,7 +444,7 @@ def define_train_args(
     parser.add_argument(
         "--save-steps",
         type=int,
-        default=1000,
+        default=5000,
         help="Save after every n number of steps",
     )
     parser.add_argument(
@@ -451,6 +523,21 @@ def define_train_args(
         choices=[f"O{i}" for i in range(4)],
         help="What optimization level to use for fp16 floats. "
         "See https://nvidia.github.io/apex/amp.html#opt-levels",
+    )
+    optim_group.add_argument(
+        "--early-stopping",
+        default=False,
+        action="store_true",
+        help="Whether to use early stopping based on validation nll",
+    )
+    optim_group.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=7 * 1024,  # Max batch size that fits on a single 2080ti
+        # without going oom. This is smaller than when running evaluation
+        # separately, since we need to account for the optimizer state and
+        # fragmentation.
+        help="The batch size to use for evaluation",
     )
 
     parser.set_defaults(func=perform_training)

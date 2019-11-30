@@ -279,16 +279,10 @@ class MetricStore(object):
         """ Count of the metrics being tracked """
         return len(self.metrics)
 
-    def add(self, metrics):
-        """ Adds a copy of the Metrics to the store """
-        if isinstance(metrics, Metric):
-            # if you pass a single metric
-            self.metrics[metrics.name] = metrics
-        else:
-            # metrics must otherwise be iterable
-            self.metrics.update(
-                {metric.name: copy.deepcopy(metric) for metric in metrics}
-            )
+    def add(self, metric: Metric):
+        """ Adds a copy of the Metric to the store if it does not already exist """
+        if metric.name not in self.metrics:
+            self.metrics[metric.name] = copy.deepcopy(metric)
 
     def save(self, path):
         """ Save the metrics to disk """

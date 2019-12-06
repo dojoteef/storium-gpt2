@@ -87,9 +87,12 @@ training provide directory of preprocessed data.
 
     namespaces = {}
     for sub_parser in sub_parsers.choices.values():
+        if args.func != sub_parser.get_default("func"):
+            continue
+
         extracted = extract(sub_parser)
         if not extracted:
-            continue
+            raise ValueError("Unable to extract sub_parser arguments!")
 
         namespaces.update(extracted)
         namespaces.update(

@@ -145,13 +145,13 @@ class Generator:
             seq_length = batch["tokens"].shape[1]
             batch = self.sample_first(batch)
 
-            done = [t.item() == self.separator_id for t in batch["tokens"]]
+            done = [t.item() == self.tokenizer.eos_token_id for t in batch["tokens"]]
             outputs = [t.tolist() for t in batch["tokens"]]
             for _ in range(seq_length, min(seq_length + length, max_length)):
                 batch = self.sample_next(batch)
                 for idx, (token, output) in enumerate(zip(batch["tokens"], outputs)):
                     next_token = token.item()
-                    done[idx] = done[idx] or (next_token == self.separator_id)
+                    done[idx] = done[idx] or (next_token == self.tokenizer.eos_token_id)
                     if done[idx]:
                         continue
 

@@ -8,6 +8,7 @@ from typing import Any, Dict
 # import train first, so that comet initializes before torch
 from train import define_train_args
 from evaluate import define_eval_args
+from generate import define_generate_args
 from data.dataset import define_preprocess_args
 from data.preprocess import define_split_args
 
@@ -41,6 +42,7 @@ training provide directory of preprocessed data.
     define_preprocess_args(sub_parsers)
     define_eval_args(sub_parsers)
     define_train_args(sub_parsers)
+    define_generate_args(sub_parsers)
 
     parser.add_argument(
         "-v",

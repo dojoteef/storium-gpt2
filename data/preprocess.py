@@ -143,6 +143,7 @@ class Segment(tuple):
     # metadata
     segment_ids: Tuple[int, ...]
     separator: Optional[int]
+    eos: Optional[int]
 
     # Layout related variables
     trim: Trim
@@ -160,6 +161,7 @@ class Segment(tuple):
         *iterable: Union[Iterable[int], Iterable["Segment"]],
         segment_ids: Iterable[int] = tuple(),
         separator: Optional[int] = None,
+        eos: Optional[int] = None,
         preferred_length: int = 0,
         trim: Trim = Trim.end,
     ):
@@ -175,9 +177,10 @@ class Segment(tuple):
         self.naive_max_length = -1
         self.preferred_length = preferred_length
 
-        # Since the separator effects the length, we must set it before
+        # Since the separator and eos effects the length, we must set it before
         # iterating over the Segment below.
         self.separator = separator
+        self.eos = eos
 
         all_ints = all(isinstance(t, int) for t in self)
         if not (all_ints or all(isinstance(t, Segment) for t in self)):
@@ -312,6 +315,16 @@ class Segment(tuple):
             # sequence to be too long
             sequence = sequence[: len(self)]
 
+        if self.eos is not None:
+            # By virtue of adding eos, we may need to remove the next to last
+            # element of the sequence, if it would cause the constrained
+            # sequence to be too long
+            if len(sequence) + 1 > len(self):
+                sequence = sequence[: len(self) - 1]
+
+            # If we have an end of sequence token it is always last
+            sequence = sequence + (self.eos,)
+
         return sequence
 
     @property
@@ -339,7 +352,11 @@ class Segment(tuple):
         """
         Get the full unconstrained length of the Segment
         """
-        return super().__len__() + (0 if self.separator is None else 1)
+        return (
+            super().__len__()
+            + (0 if self.separator is None else 1)
+            + (0 if self.eos is None else 1)
+        )
 
     @property
     def token_segments(self):
@@ -518,17 +535,13 @@ class IndexedSet(List[DataType]):
     """
 
     def __init__(self, *iterable: Iterable[DataType], key=int):
-        # Ensure the list is in sorted order
+        super().__init__()
         self._key = key
+        self._keys: List[Any] = []
 
-        values = tuple(*iterable)
-        if values:
-            keys, values = zip(*sorted((key(i), i) for i in values))
-            self._keys = list(keys)
-        else:
-            self._keys = []
-
-        super().__init__(values)
+        # Ensure the list is in sorted order by inserting one at a time
+        for value in tuple(*iterable):
+            self.insert(value)
 
     def insert(self, value):
         """
@@ -701,6 +714,8 @@ class Preprocessor:
         self,
         string_or_list: Union[str, List[str]],
         special_token: Optional[SpecialToken] = None,
+        separator_token_id: Optional[int] = None,
+        eos_token_id: Optional[int] = None,
         preferred_length: int = 0,
         trim: Trim = Trim.end,
     ) -> Segment:
@@ -710,7 +725,10 @@ class Preprocessor:
         """
         return Segment(
             self.encode(string_or_list),
-            separator=self.tokenizer.convert_tokens_to_ids(SpecialToken.separator),
+            separator=self.tokenizer.convert_tokens_to_ids(SpecialToken.separator)
+            if separator_token_id is None
+            else separator_token_id,
+            eos=eos_token_id,
             segment_ids=[self.tokenizer.convert_tokens_to_ids(special_token)]
             if special_token
             else tuple(),
@@ -725,7 +743,11 @@ class Preprocessor:
         return Segment(
             iter(
                 self.encode_special(
-                    extract_string(field, character), SpecialToken.from_string(field),
+                    extract_string(field, character),
+                    SpecialToken.from_string(field),
+                    separator_token_id=self.tokenizer.bos_token_id
+                    if field == "name"
+                    else None,
                 )
                 for field in ("name", "description")
             ),
@@ -814,6 +836,7 @@ class Preprocessor:
             text,
             SpecialToken.from_string(entry["format"]),
             preferred_length=self.preferred_entry_length,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
         summary = self.summarize_entry(entry)
         if not summary:
@@ -964,18 +987,18 @@ class Preprocessor:
         for idx, prev_entry_id in enumerate(prev_entry_ids, 1):
             # Get the summary of the previous entries from the same character and
             # mark them as such
-            entry_info = story.entries[prev_entry_id]
-            if entry_info.entry_id == entry_info.establishment_id:
+            prev_entry_info = story.entries[prev_entry_id]
+            if prev_entry_info.entry_id == entry_info.establishment_id:
                 continue
 
             character_token = (
                 SpecialToken.same_character
-                if entry_info.character_id == character_id
+                if prev_entry_info.character_id == character_id
                 else SpecialToken.diff_character
             )
             summary.append(
                 Segment(
-                    entry_info.summary,
+                    prev_entry_info.summary,
                     segment_ids=tuple(
                         self.tokenizer.convert_tokens_to_ids(
                             idx * (SpecialToken.previous,) + (character_token,)
@@ -984,17 +1007,21 @@ class Preprocessor:
                 )
             )
 
-        entry_summary = entry_info.summary
-        if prev_entry_ids:
-            # If we used any history, then mark this entry as written by the
-            # same character
-            entry_summary = Segment(
-                entry_info.summary,
-                segment_ids=[
-                    self.tokenizer.convert_tokens_to_ids(SpecialToken.same_character)
-                ],
-            )
-        summary.append(entry_summary)
+        if entry_info.summary != entry_info.text:
+            entry_summary = entry_info.summary
+
+            if prev_entry_ids:
+                # If we used any history, then mark this entry as written by the
+                # same character
+                entry_summary = Segment(
+                    entry_summary,
+                    segment_ids=[
+                        self.tokenizer.convert_tokens_to_ids(
+                            SpecialToken.same_character
+                        )
+                    ],
+                )
+            summary.append(entry_summary)
 
         return Segment(summary)
 
@@ -1010,7 +1037,7 @@ class Preprocessor:
             # Only characters can do a normal "move"
             return Segment()
 
-        return Segment((self.get_entry_summary(story, entry_id), entry_info.text))
+        return Segment((self.get_entry_summary(story, entry_id), entry_info.text,))
 
 
 def tensorize(

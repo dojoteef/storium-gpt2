@@ -32,9 +32,13 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
         tokens = inputs["tokens"]
         segment_masks = inputs["segment_masks"].unsqueeze(-1)
         segments_embeds = self.wte(inputs["segments"]) * segment_masks
-        inputs_embeds = self.wte(
-            torch.max(tokens, tokens.new_zeros(1))
-        ) + segments_embeds.sum(1)
 
-        outputs = super().forward(inputs_embeds=inputs_embeds, labels=tokens)
+        args = {
+            "inputs_embeds": self.wte(torch.max(tokens, tokens.new_zeros(1)))
+            + segments_embeds.sum(1),
+            "past": inputs.get("past", None),
+            "labels": tokens if loss_only else None,
+        }
+
+        outputs = super().forward(**args)
         return outputs[:1] if loss_only else outputs

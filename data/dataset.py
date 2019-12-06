@@ -4,12 +4,10 @@ Utilities and classes for manipulating the dataset
 import os
 import logging
 import argparse
-from itertools import chain
 from multiprocessing import Pool
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 
 import torch
-from torch import nn
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import (
@@ -47,9 +45,6 @@ AVAILABLE_TOKENIZERS = [
 ]
 
 
-EntryList = Sequence[Dict[str, Any]]
-
-
 class StoriumDataset(Dataset):
     """
     The torch dataset class for Storium for use in a DataLoader
@@ -71,71 +66,6 @@ class StoriumDataset(Dataset):
             return [self.entries[i] for i in idx]
 
         return self.entries[idx]
-
-    def collate(
-        self, entries: Union[Sequence[EntryList], EntryList],
-    ):
-        """
-        Collate the list of batches
-        """
-
-        def collator(entry_list: EntryList):
-            """
-            Collate a list of entries
-            """
-            tokens = nn.utils.rnn.pad_sequence(
-                tuple(e["tokens"] for e in entry_list),
-                batch_first=True,
-                padding_value=-1,
-            )
-            max_length = tokens.shape[-1]
-
-            def pad(entry, field):
-                """
-                Pad the segment
-                """
-                return nn.utils.rnn.pad_sequence(
-                    tuple(
-                        torch.cat(
-                            (
-                                s[field],
-                                s[field].new_full((max_length - len(s[field]),), 0),
-                            )
-                        )
-                        for s in entry["segments"]
-                    ),
-                    batch_first=True,
-                    padding_value=0,
-                )
-
-            segments = nn.utils.rnn.pad_sequence(
-                tuple(pad(e, "segments") for e in entry_list),
-                batch_first=True,
-                padding_value=0,
-            )
-            segment_masks = nn.utils.rnn.pad_sequence(
-                tuple(pad(e, "mask") for e in entry_list),
-                batch_first=True,
-                padding_value=0,
-            )
-
-            return {
-                "tokens": tokens,
-                "segments": segments,
-                "segment_masks": segment_masks,
-                "num_tokens": sum(len(e["tokens"]) for e in entry_list),
-            }
-
-        if not entries:
-            return {}
-
-        if isinstance(entries[0], Sequence):
-            collated = collator(list(chain(*entries)))
-            collated["chunk_sizes"] = tuple(len(e) for e in entries)
-        else:
-            collated = collator(entries)  # type:ignore
-
-        return collated
 
     def get_tokenizer(self):
         """
@@ -233,6 +163,7 @@ class StoriumDataset(Dataset):
                     [filename, preprocessor],
                     {"naive_layout": naive_layout},
                 )
+                # type(self)._process(filename, preprocessor, naive_layout=naive_layout)
             )
         pool.close()
 

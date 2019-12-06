@@ -33,6 +33,22 @@ def pairwise(iterable: Iterable, longest: bool = False):
     return zip(x, y)
 
 
+def grouper(iterable, n, fillvalue=None, padded=False):  # pylint:disable=invalid-name
+    """
+    See itertools recipes:
+    https://docs.python.org/3/library/itertools.html#itertools-recipes
+    Collect data into fixed-length chunks or blocks
+    """
+    args = [iter(iterable)] * n
+    groups = zip_longest(*args, fillvalue=fillvalue)
+    if padded:
+        # keep the fill value
+        return groups
+    else:
+        # ignore the fill value
+        return [[x for x in group if x is not fillvalue] for group in groups]
+
+
 class TQDMStreamWrapper(io.IOBase):
     """ A wrapper around an existing IO stream to funnel to tqdm """
 

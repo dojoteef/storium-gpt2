@@ -7,6 +7,7 @@ import json
 import logging
 import argparse
 from typing import Any, Dict, List, Tuple
+from types import SimpleNamespace
 
 import torch
 from torch.nn import functional as F
@@ -26,7 +27,7 @@ class Generator:
     A class that encapsulates all the functionality needed to generate from a model
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: SimpleNamespace):
         """
         Initialize the generator
         """
@@ -36,7 +37,7 @@ class Generator:
         self.model: PreTrainedModel
         self.dataset: StoriumDataset
         self.tokenizer: PreTrainedTokenizer
-        self.train_args: argparse.Namespace
+        self.train_args: SimpleNamespace
 
     def load(self, checkpoint_dir):
         """
@@ -52,7 +53,7 @@ class Generator:
         # Must load the train config first
         with open(train_config_filename, "rt") as config_file:
             self.train_args = json.load(
-                config_file, object_hook=lambda obj: argparse.Namespace(**obj)
+                config_file, object_hook=lambda obj: SimpleNamespace(**obj)
             )
 
         logging.info("Loading model")
@@ -309,14 +310,14 @@ def define_generate_args(
     sample_group.add_argument(
         "--top-p",
         type=float,
-        default=0.0,
+        default=0.9,
         help="top_p > 0.0: keep the top tokens with cumulative probability >= top_p"
         "Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)",
     )
     sample_group.add_argument(
         "--temperature",
         type=float,
-        default=1.0,
+        default=0.7,
         help="temperature == 0.0: greedy decoding; temperature == 1.0: normal multinomial samples",
     )
 

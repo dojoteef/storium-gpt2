@@ -7,6 +7,7 @@ import json
 import argparse
 import logging
 from typing import Any, Dict, Optional
+from types import SimpleNamespace
 from contextlib import ExitStack
 
 from comet_ml import Experiment  # must be before torch!
@@ -29,12 +30,12 @@ class Evaluator:
     A class that encapsulates all the functionality needed to evaluate a model
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: SimpleNamespace):
         """
         Initialize the evaluator
         """
         self.args = args
-        self.train_args: argparse.Namespace
+        self.train_args: SimpleNamespace
 
         self.best_nll = float("inf")
         self.amp_initialized = False
@@ -78,7 +79,7 @@ class Evaluator:
         # Must load the train config first
         with open(train_config_filename, "rt") as config_file:
             self.train_args = json.load(
-                config_file, object_hook=lambda obj: argparse.Namespace(**obj)
+                config_file, object_hook=lambda obj: SimpleNamespace(**obj)
             )
 
         logging.info("Loading model")

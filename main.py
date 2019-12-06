@@ -4,6 +4,7 @@ This file runs a number of commands including data preprocessing
 import argparse
 import logging
 from typing import Any, Dict
+from types import SimpleNamespace
 
 # import train first, so that comet initializes before torch
 from train import define_train_args
@@ -13,7 +14,7 @@ from data.dataset import define_preprocess_args
 from data.preprocess import define_split_args
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> SimpleNamespace:
     """ Parse the arguments required for splitting the dataset """
     parser = argparse.ArgumentParser("Storyteller")
     parser.add_argument(
@@ -79,7 +80,7 @@ training provide directory of preprocessed data.
             ):
                 namespaces.update(group_dict)
             else:
-                namespaces[group.title] = argparse.Namespace(**group_dict)
+                namespaces[group.title] = SimpleNamespace(**group_dict)
 
         return namespaces
 
@@ -103,7 +104,7 @@ training provide directory of preprocessed data.
         )
     namespaces.update(extract(parser))
 
-    return argparse.Namespace(**namespaces)
+    return SimpleNamespace(**namespaces)
 
 
 def main():

@@ -10,6 +10,7 @@ import shutil
 import argparse
 import logging
 from typing import Any, Dict, Optional
+from types import SimpleNamespace
 from itertools import cycle, islice
 from contextlib import ExitStack
 
@@ -40,7 +41,7 @@ class Trainer:
     A class that encapsulates all the functionality needed to train a model
     """
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: SimpleNamespace):
         """
         Initialize the trainer
         """
@@ -276,7 +277,7 @@ class Trainer:
         # Must load the train config first
         with open(train_config_filename, "rt") as config_file:
             self.args = json.load(
-                config_file, object_hook=lambda obj: argparse.Namespace(**obj)
+                config_file, object_hook=lambda obj: SimpleNamespace(**obj)
             )
 
         train_state = torch.load(train_state_filename)

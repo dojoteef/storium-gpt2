@@ -12,7 +12,7 @@ from utils import get_version_string
 
 
 def initialize_experiment(
-    args: SimpleNamespace, params: Sequence[str] = tuple(),
+    args: SimpleNamespace, params: Sequence[str] = tuple(), name: str = ""
 ) -> Experiment:
     """
     Initialize experiment tracking if specified
@@ -77,5 +77,9 @@ def initialize_experiment(
             experiment.log_parameters(
                 getattr(getattr(args, name, None), "__dict__", {}), prefix=name
             )
+
+    if name:
+        # name the experiment if specified
+        experiment.set_name(name)
 
     return experiment

@@ -444,6 +444,11 @@ def define_train_args(
         until the file exists, then start tracking that experiment.",
     )
     parser.add_argument(
+        "--experiment-name",
+        type=str,
+        help="A name for the experiment when using comet for tracking",
+    )
+    parser.add_argument(
         "--restore",
         type=str,
         help="Restore from the specified checkpoint before continuing training",

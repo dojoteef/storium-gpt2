@@ -3,8 +3,8 @@ Module for using the comet-ml experiment framework
 """
 import os
 import time
-import argparse
 from typing import Sequence
+from types import SimpleNamespace
 
 from comet_ml import Experiment, ExistingExperiment
 
@@ -12,7 +12,7 @@ from utils import get_version_string
 
 
 def initialize_experiment(
-    args: argparse.Namespace, params: Sequence[str] = tuple(),
+    args: SimpleNamespace, params: Sequence[str] = tuple(),
 ) -> Experiment:
     """
     Initialize experiment tracking if specified

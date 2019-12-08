@@ -99,7 +99,9 @@ class Trainer:
         )
         self.metric_store.add(metrics.Metric("oom", "format_int", "t"))
         self.metric_store.add(metrics.Metric("nll", "format_float", max_history=1000))
-        self.experiment = initialize_experiment(self.args, ("data", "model", "optim"))
+        self.experiment = initialize_experiment(
+            self.args, ("data", "model", "optim"), self.args.experiment_name
+        )
 
     def _initialize(self):
         """

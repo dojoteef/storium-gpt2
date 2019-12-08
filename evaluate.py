@@ -60,7 +60,7 @@ class Evaluator:
         Initialize the experiment
         """
         self.experiment = (
-            initialize_experiment(self.args, ("data",))
+            initialize_experiment(self.args, ("data",), self.args.experiment_name)
             if experiment is None
             else experiment
         )
@@ -207,6 +207,11 @@ def define_eval_args(
         help="Whether to track this experiment. If an experiment id is provided, it will track \
         the existing experiment. If a filename ending with guid it is provided, it will wait \
         until the file exists, then start tracking that experiment.",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        type=str,
+        help="A name for the experiment when using comet for tracking",
     )
     parser.add_argument(
         "--restore",

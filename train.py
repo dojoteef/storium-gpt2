@@ -5,6 +5,7 @@ import os
 import sys
 import copy
 import glob
+import math
 import json
 import shutil
 import argparse
@@ -367,12 +368,35 @@ class Trainer:
                 # And store a local variable for easy access
                 vnll_metric = self.metric_store["vnll"]
 
+            loss = 0
+            num_tokens = 0
+            update_steps = self.args.optim.gradient_accumulation_steps
             for step, batch in enumerate(batch_iterator, self.step + 1):
                 self.step = step
-                self.experiment.set_step(step)
 
                 try:
-                    self.train_step(batch, model, optimizer, scheduler)
+                    step_loss = self.compute_gradients_and_loss(batch, model, optimizer)
+                    run_optimizer = step % update_steps == 0
+
+                    if run_optimizer:
+                        # Run an optimization step
+                        optimizer.step()
+                        scheduler.step()  # Update learning rate schedule
+                        model.zero_grad()
+
+                    # Update loss and num tokens after running an optimization
+                    # step, in case it results in an out of memory error
+                    loss += step_loss
+                    num_tokens += batch["num_tokens"]
+
+                    if run_optimizer:
+                        # Since we ran the optimizer, update our metrics as well
+                        self.update_metrics(
+                            loss / update_steps, num_tokens, scheduler.get_lr()[0],
+                        )
+                        num_tokens = 0
+                        loss = 0
+
                 except RuntimeError as rte:
                     if "out of memory" in str(rte):
                         self.metric_store["oom"].update(1)
@@ -397,9 +421,9 @@ class Trainer:
 
             batch_iterator.close()
 
-    def train_step(self, batch: Dict[str, Any], model, optimizer, scheduler):
+    def compute_gradients_and_loss(self, batch: Dict[str, Any], model, optimizer):
         """
-        Run a single step of training using the passed in batch
+        Compute the gradients and loss for the specified batch
         """
         model.train()
         loss = model(batch, loss_only=True)[0]
@@ -414,17 +438,20 @@ class Trainer:
         else:
             loss.backward()
 
-        optimizer.step()
-        scheduler.step()  # Update learning rate schedule
-        model.zero_grad()
+        return loss.item()
 
+    def update_metrics(self, loss, num_tokens, lr):  # pylint:disable=invalid-name
+        """
+        Update the metrics
+        """
         # Update our metrics
-        self.metric_store["nll"].update(loss.item())
-        self.metric_store["ntok"].update(batch["num_tokens"])
-        self.metric_store["ppl"].update(torch.exp(loss).item())
-        self.metric_store["lr"].update(scheduler.get_lr()[0])
+        self.metric_store["nll"].update(loss)
+        self.metric_store["ntok"].update(num_tokens)
+        self.metric_store["ppl"].update(math.exp(loss))
+        self.metric_store["lr"].update(lr)
 
         # Update the experiment logs as well
+        self.experiment.set_step((self.experiment.curr_step or 0) + 1)
         for name, metric in self.metric_store.items():
             self.experiment.log_metric(name, metric.last_value)
 
@@ -523,6 +550,12 @@ def define_train_args(
         type=int,
         default=8000,
         help="How many steps of warmup to apply.",
+    )
+    optim_group.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help="How many steps to accumulate gradients before doing an update",
     )
     optim_group.add_argument(
         "--fp16",

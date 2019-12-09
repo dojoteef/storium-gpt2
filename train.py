@@ -33,7 +33,13 @@ from data.parallel import chunked_scattering
 from evaluate import Evaluator
 from experiment import initialize_experiment
 from model import GPT2SegmentedModel
-from utils import tqdm_wrap_stdout, tqdm_unwrap_stdout
+from utils import (
+    collect_tensors,
+    tqdm_wrap_stdout,
+    tqdm_unwrap_stdout,
+    refresh_cuda_memory,
+    release_cuda_memory,
+)
 import metrics
 
 
@@ -332,7 +338,7 @@ class Trainer:
             return f"Train {self.metric_store}"
 
         max_steps = self.args.optim.max_steps
-        batches = islice(cycle(dataloader), max_steps - self.step)
+        batches = islice(cycle(dataloader), self.step, max_steps - self.step)
         batch_iterator = tqdm(
             batches,
             unit="batch",
@@ -413,11 +419,24 @@ class Trainer:
 
                     if self.args.optim.early_stopping:
                         evaluator.reset_metrics()
-                        with tqdm_unwrap_stdout():
+                        with ExitStack() as eval_stack:
+                            # pylint:disable=no-member
+                            eval_stack.enter_context(tqdm_unwrap_stdout())
+                            eval_stack.enter_context(
+                                release_cuda_memory(collect_tensors(optimizer.state))
+                            )
+                            # pylint:enable=no-member
+
                             vnll = evaluator()
                             vnll_metric.update(vnll)
                             if vnll == vnll_metric.min:
                                 self.on_new_best()
+
+                        # Try to combat OOM errors caused by doing evaluation
+                        # in the same loop with training. This manifests in out
+                        # of memory errors after the first or second evaluation
+                        # run.
+                        refresh_cuda_memory()
 
             batch_iterator.close()
 
@@ -580,10 +599,10 @@ def define_train_args(
     optim_group.add_argument(
         "--eval-batch-size",
         type=int,
-        default=7 * 1024,  # Max batch size that fits on a single 2080ti
+        default=9 * 1024,  # Max batch size that fits on a single 2080ti
         # without going oom. This is smaller than when running evaluation
-        # separately, since we need to account for the optimizer state and
-        # fragmentation.
+        # separately, since we need to account for additional training state
+        # and fragmentation.
         help="The batch size to use for evaluation",
     )
 

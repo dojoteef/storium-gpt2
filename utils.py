@@ -1,15 +1,18 @@
 """
 Various utilities
 """
+import gc
 import io
 import sys
 import contextlib
 import threading
-from typing import Iterable, Union
+from typing import Dict, Iterable, List, Mapping, Sequence, Union
 from numbers import Integral
-from itertools import tee, zip_longest
+from itertools import chain, tee, zip_longest
 from subprocess import check_output, CalledProcessError
 
+import torch
+from torch import nn
 from tqdm import tqdm
 
 
@@ -96,3 +99,85 @@ def get_version_string():
         raise RuntimeError('Call to "git describe" failed!')
 
     return version
+
+
+@contextlib.contextmanager
+def release_cuda_memory(tensors: List[torch.Tensor]):
+    """
+    A context manager that moves the memory for the entire module from GPU to
+    CPU for the duration of the operation.
+    """
+    locations: Dict[torch.Tensor, torch.device] = {}
+    for tensor in tensors:
+        locations[tensor] = tensor.device
+        tensor.data = tensor.data.cpu()
+        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
+            tensor.grad.data = tensor.grad.cpu()
+
+    torch.cuda.empty_cache()
+    yield
+    torch.cuda.empty_cache()
+
+    for tensor, device in locations.items():
+        tensor.data = tensor.to(device)
+        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
+            tensor.grad.data = tensor.grad.to(device)
+
+
+def collect_tensors(collection: Union[torch.Tensor, Sequence, Mapping]):
+    """
+    Collect all the tensors in the sequence/mapping
+    """
+    if isinstance(collection, torch.Tensor):
+        return [collection]
+
+    if isinstance(collection, Sequence):
+        return list(chain.from_iterable(collect_tensors(c) for c in collection))
+
+    if isinstance(collection, Mapping):
+        return list(
+            chain.from_iterable(collect_tensors(v) for v in collection.values())
+        )
+
+    return []
+
+
+@contextlib.contextmanager
+def release_cuda_memory(tensors: List[torch.Tensor]):
+    """
+    A context manager that moves the memory for the entire module from GPU to
+    CPU for the duration of the operation.
+    """
+    locations: Dict[torch.Tensor, torch.device] = {}
+    for tensor in tensors:
+        locations[tensor] = tensor.device
+        tensor.data = tensor.data.cpu()
+        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
+            tensor.grad.data = tensor.grad.cpu()
+
+    torch.cuda.empty_cache()
+    yield
+    torch.cuda.empty_cache()
+
+    for tensor, device in locations.items():
+        tensor.data = tensor.to(device)
+        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
+            tensor.grad.data = tensor.grad.to(device)
+
+
+def refresh_cuda_memory():
+    """
+    Essentially resets all cuda memory to help with fragmentation related
+    issues.
+
+    Fragmentation appears to be worsened by including both evaluation and
+    training together in the same loop.
+    """
+    # Run a full garbage collect first so any dangling tensors are released
+    gc.collect()
+
+    # Then refresh the memory while also clearing the cuda cache
+    with release_cuda_memory(
+        [obj for obj in gc.get_objects() if isinstance(obj, torch.Tensor)]
+    ):
+        pass

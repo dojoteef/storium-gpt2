@@ -118,7 +118,7 @@ class Trainer:
         model_name = self.args.model.model_name
 
         logging.info("Loading dataset")
-        self.dataset = StoriumDataset("train", model_name, cache_dir=cache_dir)
+        self.dataset = StoriumDataset("train", "gpt2", cache_dir=cache_dir)
         self.dataset.load(self.args.data_dir)
 
         # By default the config outputs "past", but that makes our chunked
@@ -325,6 +325,9 @@ class Trainer:
         model = self.modules["model"]
         optimizer = self.modules["optimizer"]
         scheduler = self.modules["scheduler"]
+
+        if self.args.optim.use_gradient_checkpointing:
+            model.enable_gradient_checkpointing()
 
         model = nn.DataParallel(model)
         dataloader = get_dataloader(
@@ -575,6 +578,12 @@ def define_train_args(
         type=int,
         default=1,
         help="How many steps to accumulate gradients before doing an update",
+    )
+    optim_group.add_argument(
+        "--use-gradient-checkpointing",
+        default=False,
+        action="store_true",
+        help="Whether to use gradient checkpointing. Needed for bigger models.",
     )
     optim_group.add_argument(
         "--fp16",

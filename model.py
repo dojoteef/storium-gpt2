@@ -4,7 +4,26 @@ Define the baseline model we'll use
 from typing import Any, Dict
 
 import torch
+from torch.utils import checkpoint
 from transformers import GPT2LMHeadModel
+
+
+def checkpointed_block(block):
+    """
+    Call the wrapped module
+    """
+
+    def custom_forward(x, layer_past=None, attention_mask=None, head_mask=None):
+        # The checkpoint API really does not like lists, so return a tuple,
+        # otherwise it errors out ¯\_(ツ)_/¯
+        return tuple(block(x, layer_past, attention_mask, head_mask))
+
+    def wrapped_block(x, layer_past=None, attention_mask=None, head_mask=None):
+        return checkpoint.checkpoint(
+            custom_forward, x, layer_past, attention_mask, head_mask
+        )
+
+    return wrapped_block
 
 
 class GPT2SegmentedModel(GPT2LMHeadModel):
@@ -42,3 +61,19 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
 
         outputs = super().forward(**args)
         return outputs[:1] if loss_only else outputs
+
+    def enable_gradient_checkpointing(self):
+        """
+        A function that enables gradient checkpointing on each of the
+        transformer layers of the GPT2 model.
+        """
+        # pylint:disable=protected-access
+        # Save off the real module list
+        self.transformer._h = self.transformer.h
+
+        # Replace the module list with wrapper functions
+        del self.transformer.h  # Must first explicitly unset the variable
+        self.transformer.h = [
+            checkpointed_block(block) for block in self.transformer._h
+        ]
+        # pylint:enable=protected-access

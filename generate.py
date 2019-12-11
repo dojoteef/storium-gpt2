@@ -6,7 +6,7 @@ import sys
 import json
 import logging
 import argparse
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from types import SimpleNamespace
 
 import torch
@@ -146,10 +146,12 @@ class Generator:
             seq_length = batch["tokens"].shape[1]
             batch = self.sample_first(batch)
 
+            final_length = min(seq_length + length, max_length)
+            desired_length = final_length - seq_length
             done = [t.item() == self.tokenizer.eos_token_id for t in batch["tokens"]]
             outputs = [t.tolist() for t in batch["tokens"]]
-            for _ in range(seq_length, min(seq_length + length, max_length)):
-                batch = self.sample_next(batch)
+            for _ in range(seq_length, final_length):
+                batch = self.sample_next(batch, outputs, desired_length)
                 for idx, (token, output) in enumerate(zip(batch["tokens"], outputs)):
                     next_token = token.item()
                     done[idx] = done[idx] or (next_token == self.tokenizer.eos_token_id)
@@ -167,12 +169,33 @@ class Generator:
             [self.tokenizer.decode(output) for output in outputs],
         )
 
-    def sample_logits(self, logits) -> torch.Tensor:
+    def sample_logits(
+        self,
+        logits: torch.Tensor,
+        generated: Optional[List[Set[int]]] = None,
+        length_penalties: Optional[List[float]] = None,
+    ) -> torch.Tensor:
         """
         Perform sampling on the passed in logits
         """
+        # First apply the repetition penalty
+        if generated:
+            for idx, tokens in enumerate(generated):
+                for token in tokens:
+                    logits[idx, token] /= self.args.sample.repetition_penalty
+
+        # Then apply a length penalty if specified
+        if length_penalties:
+            for idx, penalty in enumerate(length_penalties):
+                logits[idx, self.tokenizer.eos_token_id] *= penalty
+
+        # Ensure we cannot get a separator, as that shouldn't occur
+        logits[:, self.separator_id] = 0
+
+        # Then filter the logits
         temperature = self.args.sample.temperature
         logits = self.filter(logits / (temperature if temperature > 0 else 1.0))
+
         return (
             torch.argmax(logits, dim=-1)
             if temperature == 0  # greedy sampling
@@ -203,7 +226,9 @@ class Generator:
             "num_tokens": num_tokens + batch_size,
         }
 
-    def sample_next(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+    def sample_next(
+        self, batch: Dict[str, Any], generated: List[List[int]], desired_length: int
+    ) -> Dict[str, Any]:
         """
         Sample the next token for the passed in batch
         """
@@ -213,7 +238,11 @@ class Generator:
         batch_size = len(lengths)
 
         outputs = self.model(batch)
-        next_token = self.sample_logits(outputs[0][:, 0])
+        next_token = self.sample_logits(
+            outputs[0][:, 0],
+            generated=[set(tokens) for tokens in generated],
+            length_penalties=[len(tokens) / desired_length for tokens in generated],
+        )
 
         # Return an updated batch
         return {
@@ -319,6 +348,12 @@ def define_generate_args(
         type=float,
         default=0.7,
         help="temperature == 0.0: greedy decoding; temperature == 1.0: normal multinomial samples",
+    )
+    sample_group.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.0,
+        help="A repition penalty as described in CTRL (https://arxiv.org/abs/1909.05858)",
     )
 
     parser.set_defaults(func=perform_generation)

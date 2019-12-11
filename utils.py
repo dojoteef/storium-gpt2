@@ -101,29 +101,6 @@ def get_version_string():
     return version
 
 
-@contextlib.contextmanager
-def release_cuda_memory(tensors: List[torch.Tensor]):
-    """
-    A context manager that moves the memory for the entire module from GPU to
-    CPU for the duration of the operation.
-    """
-    locations: Dict[torch.Tensor, torch.device] = {}
-    for tensor in tensors:
-        locations[tensor] = tensor.device
-        tensor.data = tensor.data.cpu()
-        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
-            tensor.grad.data = tensor.grad.cpu()
-
-    torch.cuda.empty_cache()
-    yield
-    torch.cuda.empty_cache()
-
-    for tensor, device in locations.items():
-        tensor.data = tensor.to(device)
-        if isinstance(tensor, nn.Parameter) and tensor.grad is not None:
-            tensor.grad.data = tensor.grad.to(device)
-
-
 def collect_tensors(collection: Union[torch.Tensor, Sequence, Mapping]):
     """
     Collect all the tensors in the sequence/mapping

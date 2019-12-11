@@ -35,7 +35,6 @@ class Evaluator:
         Initialize the evaluator
         """
         self.args = args
-        self.train_args: SimpleNamespace
 
         self.best_nll = float("inf")
         self.amp_initialized = False
@@ -76,12 +75,6 @@ class Evaluator:
                 f"Cannot find train config file: {train_config_filename}"
             )
 
-        # Must load the train config first
-        with open(train_config_filename, "rt") as config_file:
-            self.train_args = json.load(
-                config_file, object_hook=lambda obj: SimpleNamespace(**obj)
-            )
-
         logging.info("Loading model")
         config = GPT2Config.from_pretrained(checkpoint_dir)
         model = GPT2SegmentedModel.from_pretrained(
@@ -99,9 +92,7 @@ class Evaluator:
         """
         if not hasattr(self, "dataset") or self.dataset.split != split:
             logging.info("Loading %s dataset", split)
-            self.dataset = StoriumDataset(
-                split, self.train_args.model.model_name, cache_dir=self.args.cache_dir,
-            )
+            self.dataset = StoriumDataset(split, "gpt2", cache_dir=self.args.cache_dir,)
             self.dataset.load(self.args.data_dir)
 
     def save(self):

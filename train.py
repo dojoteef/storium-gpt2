@@ -55,7 +55,6 @@ class Trainer:
         self.args = args
 
         self.step = 0
-        self.opt_step = 0
         self.amp_initialized = False
         self.dataset: StoriumDataset
         self.modules: Dict[str, Any] = {}
@@ -164,15 +163,13 @@ class Trainer:
         Save all the tracked modules
         """
         # Save model checkpoint
-        checkpoint_dir = os.path.join(
-            self.args.output_dir, f"checkpoint-{self.opt_step}",
-        )
+        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.step}",)
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
 
         logging.info("Saving model checkpoint to %s", checkpoint_dir)
 
-        train_state: Dict[str, Any] = {"step": self.step, "opt_step": self.opt_step}
+        train_state: Dict[str, Any] = {"step": self.step}
         if self.use_fp16:
             # Need to save the automatic mixed precision state_dict
             # See https://github.com/NVIDIA/apex#checkpointing
@@ -206,7 +203,7 @@ class Trainer:
         Mark the latest checkpoint as the best
         """
         new_best_checkpoint = os.path.join(
-            self.args.output_dir, f"checkpoint-{self.opt_step}"
+            self.args.output_dir, f"checkpoint-{self.step}"
         )
         logging.info("New best %s", new_best_checkpoint)
         best_checkpoint_path = os.path.join(self.args.output_dir, "best-checkpoint")
@@ -309,7 +306,6 @@ class Trainer:
                 module.load_state_dict(train_state[name])
 
         self.step = train_state["step"]
-        self.opt_step = train_state.get("opt_step", self.step)
         self.metric_store.load(train_metrics_filename)
 
     def __call__(self):
@@ -341,7 +337,7 @@ class Trainer:
         accumulation_steps = self.args.optim.gradient_accumulation_steps
         progress = tqdm(
             unit="step",
-            initial=self.opt_step,
+            initial=self.step,
             dynamic_ncols=True,
             desc=get_description(),
             total=max_steps,
@@ -374,9 +370,7 @@ class Trainer:
 
             loss = 0
             num_tokens = 0
-            for step, batch in enumerate(cycle(dataloader), self.step + 1):
-                self.step = step
-
+            for step, batch in enumerate(cycle(dataloader), 1):
                 try:
                     step_loss = self.compute_gradients_and_loss(batch, model, optimizer)
                     run_optimizer = (step % accumulation_steps) == 0
@@ -394,8 +388,8 @@ class Trainer:
 
                     if run_optimizer:
                         # Since we ran the optimizer, increment current step
-                        self.experiment.set_step(self.opt_step)
-                        self.opt_step += 1
+                        self.step += 1
+                        self.experiment.set_step(self.step)
                         progress.update()
 
                         # update our metrics as well
@@ -410,7 +404,7 @@ class Trainer:
                         # and finally check if we should save
                         if (
                             self.args.save_steps > 0
-                            and self.opt_step % self.args.save_steps == 0
+                            and self.step % self.args.save_steps == 0
                         ):
                             # First save the current checkpoint
                             self.save()
@@ -444,7 +438,7 @@ class Trainer:
                                 logging.info("Stopping early")
                                 break
 
-                            if self.opt_step >= max_steps:
+                            if self.step >= max_steps:
                                 break
 
                 except RuntimeError as rte:

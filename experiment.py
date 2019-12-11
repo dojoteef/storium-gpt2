@@ -28,6 +28,10 @@ def initialize_experiment(
     api_key = None if track else ""
     experiment_type = Experiment
     experiment_args = [api_key]
+    experiment_path = os.path.join(args.output_dir, "experiment.guid")
+    if not isinstance(track, str) and os.path.exists(experiment_path):
+        track = experiment_path
+
     if isinstance(track, str):
         experiment_type = ExistingExperiment
         if track.endswith(".guid"):
@@ -64,7 +68,7 @@ def initialize_experiment(
     )
 
     if track and experiment_type == Experiment:
-        with open(os.path.join(args.output_dir, "experiment.guid"), "wt") as guid_file:
+        with open(experiment_path, "wt") as guid_file:
             guid_file.write(experiment.id)
 
     # This needs to be called separately to disable monkey patching of the

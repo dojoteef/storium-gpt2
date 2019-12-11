@@ -26,6 +26,20 @@ def checkpointed_block(block):
     return wrapped_block
 
 
+def checkpointed_embedding(embed):
+    """
+    Call the wrapped module
+    """
+
+    def custom_forward(x):
+        return embed(x)
+
+    def wrapped_embedding(x):
+        return checkpoint.checkpoint(custom_forward, x)
+
+    return wrapped_embedding
+
+
 def fixup_names(  # pylint:disable=unused-argument
     module, state_dict, prefix, local_metadata
 ):
@@ -34,7 +48,7 @@ def fixup_names(  # pylint:disable=unused-argument
     checkpoints
     """
     for old_key, new_key in [
-        (k, k.replace("transformer._h", "transformer.h")) for k in state_dict.keys()
+        (k, k.replace("transformer._", "transformer.")) for k in state_dict.keys()
     ]:
         if old_key != new_key:
             state_dict[new_key] = state_dict[old_key]
@@ -93,6 +107,20 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
         self.transformer.h = [
             checkpointed_block(block) for block in self.transformer._h
         ]
+
+        # Save off the real position embedding
+        self.transformer._wpe = self.transformer.wpe
+
+        # Replace the position embedding with wrapper functions
+        del self.transformer.wpe
+        self.transformer.wpe = checkpointed_embedding(self.transformer._wpe)
+
+        # Save off the real token embedding
+        self.transformer._wte = self.transformer.wte
+
+        # Replace the token embedding with wrapper functions
+        del self.transformer.wte
+        self.transformer.wte = checkpointed_embedding(self.transformer._wte)
 
         # Finally, need to make sure the state_dict we save has the correct
         # name for the list of blocks, otherwise calling from_pretrained will

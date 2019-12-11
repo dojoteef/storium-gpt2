@@ -37,7 +37,6 @@ class Generator:
         self.model: PreTrainedModel
         self.dataset: StoriumDataset
         self.tokenizer: PreTrainedTokenizer
-        self.train_args: SimpleNamespace
 
     def load(self, checkpoint_dir):
         """
@@ -48,12 +47,6 @@ class Generator:
         if not os.path.isfile(train_config_filename):
             raise RuntimeError(
                 f"Cannot find train config file: {train_config_filename}"
-            )
-
-        # Must load the train config first
-        with open(train_config_filename, "rt") as config_file:
-            self.train_args = json.load(
-                config_file, object_hook=lambda obj: SimpleNamespace(**obj)
             )
 
         logging.info("Loading model")
@@ -75,9 +68,7 @@ class Generator:
         """
         if not hasattr(self, "dataset") or self.dataset.split != split:
             logging.info("Loading %s dataset", split)
-            self.dataset = StoriumDataset(
-                split, self.train_args.model.model_name, cache_dir=self.args.cache_dir,
-            )
+            self.dataset = StoriumDataset(split, "gpt2", cache_dir=self.args.cache_dir,)
             self.dataset.load(self.args.data_dir)
             self.tokenizer = self.dataset.get_tokenizer()
             self.move_id = self.tokenizer.convert_tokens_to_ids(SpecialToken.move)

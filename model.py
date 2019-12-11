@@ -26,6 +26,23 @@ def checkpointed_block(block):
     return wrapped_block
 
 
+def fixup_names(  # pylint:disable=unused-argument
+    module, state_dict, prefix, local_metadata
+):
+    """
+    Fix the name of the keys in the state_dict caused by enabling gradient
+    checkpoints
+    """
+    for old_key, new_key in [
+        (k, k.replace("transformer._h", "transformer.h")) for k in state_dict.keys()
+    ]:
+        if old_key != new_key:
+            state_dict[new_key] = state_dict[old_key]
+            del state_dict[old_key]
+
+    return state_dict
+
+
 class GPT2SegmentedModel(GPT2LMHeadModel):
     """
     Our baseline model which uses composable segments
@@ -76,4 +93,9 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
         self.transformer.h = [
             checkpointed_block(block) for block in self.transformer._h
         ]
+
+        # Finally, need to make sure the state_dict we save has the correct
+        # name for the list of blocks, otherwise calling from_pretrained will
+        # fail to load the associated parameters
+        self.transformer._register_state_dict_hook(fixup_names)
         # pylint:enable=protected-access

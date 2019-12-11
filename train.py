@@ -12,7 +12,7 @@ import argparse
 import logging
 from typing import Any, Dict, Optional
 from types import SimpleNamespace
-from itertools import cycle, islice
+from itertools import cycle
 from contextlib import ExitStack
 
 from comet_ml import Experiment  # must be before torch!
@@ -55,6 +55,7 @@ class Trainer:
         self.args = args
 
         self.step = 0
+        self.opt_step = 0
         self.amp_initialized = False
         self.dataset: StoriumDataset
         self.modules: Dict[str, Any] = {}
@@ -158,18 +159,20 @@ class Trainer:
         self.modules["optimizer"] = optimizer
         self.modules["scheduler"] = scheduler
 
-    def save(self) -> bool:
+    def save(self):
         """
         Save all the tracked modules
         """
         # Save model checkpoint
-        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.step}",)
+        checkpoint_dir = os.path.join(
+            self.args.output_dir, f"checkpoint-{self.opt_step}",
+        )
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
 
         logging.info("Saving model checkpoint to %s", checkpoint_dir)
 
-        train_state: Dict[str, Any] = {"step": self.step}
+        train_state: Dict[str, Any] = {"step": self.step, "opt_step": self.opt_step}
         if self.use_fp16:
             # Need to save the automatic mixed precision state_dict
             # See https://github.com/NVIDIA/apex#checkpointing
@@ -197,21 +200,14 @@ class Trainer:
             )
 
         self.metric_store.save(os.path.join(checkpoint_dir, "train_metrics.json"))
-        return self.prune_checkpoints()
 
     def on_new_best(self):
         """
         Mark the latest checkpoint as the best
         """
-        if self.args.max_checkpoints <= 0:
-            return
-
-        checkpoints = glob.glob(os.path.join(self.args.output_dir, "checkpoint-*"))
-        sorted_checkpoints = sorted(
-            (int(os.path.basename(c).split("-")[1]), c) for c in checkpoints
+        new_best_checkpoint = os.path.join(
+            self.args.output_dir, f"checkpoint-{self.opt_step}"
         )
-
-        new_best_checkpoint = sorted_checkpoints[-1][1]
         logging.info("New best %s", new_best_checkpoint)
         best_checkpoint_path = os.path.join(self.args.output_dir, "best-checkpoint")
         try:
@@ -313,6 +309,7 @@ class Trainer:
                 module.load_state_dict(train_state[name])
 
         self.step = train_state["step"]
+        self.opt_step = train_state.get("opt_step", self.step)
         self.metric_store.load(train_metrics_filename)
 
     def __call__(self):
@@ -341,11 +338,10 @@ class Trainer:
             return f"Train {self.metric_store}"
 
         max_steps = self.args.optim.max_steps
-        batches = islice(cycle(dataloader), self.step, max_steps - self.step)
-        batch_iterator = tqdm(
-            batches,
-            unit="batch",
-            initial=self.step + 1,
+        accumulation_steps = self.args.optim.gradient_accumulation_steps
+        progress = tqdm(
+            unit="step",
+            initial=self.opt_step,
             dynamic_ncols=True,
             desc=get_description(),
             total=max_steps,
@@ -367,7 +363,6 @@ class Trainer:
 
                 evaluator = Evaluator(eval_args)
                 evaluator.model = model
-                evaluator.train_args = self.args
                 evaluator.load_dataset("validation")
                 evaluator.initialize_experiment(experiment=self.experiment)
 
@@ -379,13 +374,12 @@ class Trainer:
 
             loss = 0
             num_tokens = 0
-            update_steps = self.args.optim.gradient_accumulation_steps
-            for step, batch in enumerate(batch_iterator, self.step + 1):
+            for step, batch in enumerate(cycle(dataloader), self.step + 1):
                 self.step = step
 
                 try:
                     step_loss = self.compute_gradients_and_loss(batch, model, optimizer)
-                    run_optimizer = step % update_steps == 0
+                    run_optimizer = (step % accumulation_steps) == 0
 
                     if run_optimizer:
                         # Run an optimization step
@@ -399,49 +393,70 @@ class Trainer:
                     num_tokens += batch["num_tokens"]
 
                     if run_optimizer:
-                        # Since we ran the optimizer, update our metrics as well
+                        # Since we ran the optimizer, increment current step
+                        self.experiment.set_step(self.opt_step)
+                        self.opt_step += 1
+                        progress.update()
+
+                        # update our metrics as well
                         self.update_metrics(
-                            loss / update_steps, num_tokens, scheduler.get_lr()[0],
+                            loss / accumulation_steps,
+                            num_tokens,
+                            scheduler.get_lr()[0],
                         )
                         num_tokens = 0
                         loss = 0
+
+                        # and finally check if we should save
+                        if (
+                            self.args.save_steps > 0
+                            and self.opt_step % self.args.save_steps == 0
+                        ):
+                            # First save the current checkpoint
+                            self.save()
+
+                            # Then if we are implementing early stopping, see
+                            # if we achieved a new best
+                            if self.args.optim.early_stopping:
+                                evaluator.reset_metrics()
+                                with ExitStack() as eval_stack:
+                                    # pylint:disable=no-member
+                                    eval_stack.enter_context(tqdm_unwrap_stdout())
+                                    eval_stack.enter_context(
+                                        release_cuda_memory(
+                                            collect_tensors(optimizer.state)
+                                        )
+                                    )
+                                    # pylint:enable=no-member
+
+                                    vnll = evaluator()
+                                    vnll_metric.update(vnll)
+                                    if vnll == vnll_metric.min:
+                                        self.on_new_best()
+
+                                # Try to combat OOM errors caused by doing evaluation
+                                # in the same loop with training. This manifests in out
+                                # of memory errors after the first or second evaluation
+                                # run.
+                                refresh_cuda_memory()
+
+                            if not self.prune_checkpoints():
+                                logging.info("Stopping early")
+                                break
+
+                            if self.opt_step >= max_steps:
+                                break
 
                 except RuntimeError as rte:
                     if "out of memory" in str(rte):
                         self.metric_store["oom"].update(1)
                     else:
-                        batch_iterator.close()
+                        progress.close()
                         raise rte
 
-                batch_iterator.set_description_str(get_description())
+                progress.set_description_str(get_description())
 
-                if self.args.save_steps > 0 and step % self.args.save_steps == 0:
-                    if not self.save():
-                        logging.info("Stopping early")
-                        break
-
-                    if self.args.optim.early_stopping:
-                        evaluator.reset_metrics()
-                        with ExitStack() as eval_stack:
-                            # pylint:disable=no-member
-                            eval_stack.enter_context(tqdm_unwrap_stdout())
-                            eval_stack.enter_context(
-                                release_cuda_memory(collect_tensors(optimizer.state))
-                            )
-                            # pylint:enable=no-member
-
-                            vnll = evaluator()
-                            vnll_metric.update(vnll)
-                            if vnll == vnll_metric.min:
-                                self.on_new_best()
-
-                        # Try to combat OOM errors caused by doing evaluation
-                        # in the same loop with training. This manifests in out
-                        # of memory errors after the first or second evaluation
-                        # run.
-                        refresh_cuda_memory()
-
-            batch_iterator.close()
+            progress.close()
 
     def compute_gradients_and_loss(self, batch: Dict[str, Any], model, optimizer):
         """
@@ -473,7 +488,6 @@ class Trainer:
         self.metric_store["lr"].update(lr)
 
         # Update the experiment logs as well
-        self.experiment.set_step((self.experiment.curr_step or 0) + 1)
         for name, metric in self.metric_store.items():
             self.experiment.log_metric(name, metric.last_value)
 

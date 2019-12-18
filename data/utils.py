@@ -115,6 +115,7 @@ def get_dataloader(
     worker_init_fn: Callable[[int], None] = lambda x: None,
     pin_memory: bool = True,
     num_devices: int = 1,
+    num_workers: int = 0,
     shuffle: bool = False,
 ):
     """ Utility function that gets a data loader """
@@ -142,7 +143,7 @@ def get_dataloader(
         dataset,
         batch_sampler=batch_sampler,
         collate_fn=collate,
-        num_workers=1,
+        num_workers=num_workers,
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
     )

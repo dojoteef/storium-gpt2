@@ -3,7 +3,6 @@ Generate from our Storium models
 """
 import os
 import sys
-import json
 import logging
 import argparse
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -42,13 +41,6 @@ class Generator:
         """
         Load the model and tokenizer from the specified path
         """
-        logging.info("Loading train config")
-        train_config_filename = os.path.join(checkpoint_dir, "train_config.json")
-        if not os.path.isfile(train_config_filename):
-            raise RuntimeError(
-                f"Cannot find train config file: {train_config_filename}"
-            )
-
         logging.info("Loading model")
         config = GPT2Config.from_pretrained(checkpoint_dir)
         config.output_past = True

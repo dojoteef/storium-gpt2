@@ -3,7 +3,6 @@ Our evaluation script
 """
 import os
 import sys
-import json
 import argparse
 import logging
 from typing import Any, Dict, Optional
@@ -68,13 +67,6 @@ class Evaluator:
         """
         Load the model, etc
         """
-        logging.info("Loading train config")
-        train_config_filename = os.path.join(checkpoint_dir, "train_config.json")
-        if not os.path.isfile(train_config_filename):
-            raise RuntimeError(
-                f"Cannot find train config file: {train_config_filename}"
-            )
-
         logging.info("Loading model")
         config = GPT2Config.from_pretrained(checkpoint_dir)
         model = GPT2SegmentedModel.from_pretrained(
@@ -137,6 +129,7 @@ class Evaluator:
                 except RuntimeError as rte:
                     if "out of memory" in str(rte):
                         self.metric_store["oom"].update(1)
+                        logging.warning(str(rte))
                     else:
                         batch_iterator.close()
                         raise rte

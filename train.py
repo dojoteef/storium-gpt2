@@ -173,6 +173,11 @@ class Trainer:
         if self.use_fp16:
             # Need to save the automatic mixed precision state_dict
             # See https://github.com/NVIDIA/apex#checkpointing
+
+            # But first ensure cuda memory is relatively contiguous because the
+            # call to `amp.state_dict()` seems to allocate cuda memory, which
+            # can fail if cuda memory is fragmented.
+            refresh_cuda_memory()
             train_state["amp"] = amp.state_dict()
 
         for name, module in self.modules.items():
@@ -439,11 +444,13 @@ class Trainer:
                                 break
 
                             if self.step >= max_steps:
+                                logging.info("Finished training")
                                 break
 
                 except RuntimeError as rte:
                     if "out of memory" in str(rte):
                         self.metric_store["oom"].update(1)
+                        logging.warning(str(rte))
                     else:
                         progress.close()
                         raise rte

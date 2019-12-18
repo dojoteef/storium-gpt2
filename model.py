@@ -1,60 +1,97 @@
 """
 Define the baseline model we'll use
 """
+import inspect
 from typing import Any, Dict
 
 import torch
+from torch import nn
 from torch.utils import checkpoint
 from transformers import GPT2LMHeadModel
 
 
-def checkpointed_block(block):
+class CheckpointedModule(nn.Module):
     """
-    Call the wrapped module
+    Wrapper around an nn.Module which implements gradient checkpointing
     """
 
-    def custom_forward(x, layer_past=None, attention_mask=None, head_mask=None):
-        # The checkpoint API really does not like lists, so return a tuple,
-        # otherwise it errors out ¯\_(ツ)_/¯
-        return tuple(block(x, layer_past, attention_mask, head_mask))
+    def __init__(self, module: nn.Module):
+        super().__init__()
 
-    def wrapped_block(x, layer_past=None, attention_mask=None, head_mask=None):
-        return checkpoint.checkpoint(
-            custom_forward, x, layer_past, attention_mask, head_mask
+        self.as_list = False
+        self.module = module
+        self.params = tuple(inspect.signature(module.forward).parameters.values())
+
+    def __len__(self):
+        """
+        Ask wrapped module for len
+        """
+        return len(self.module)  # type: ignore
+
+    def __iter__(self):
+        """
+        Ask wrapped module for an iterator
+        """
+        return iter(self.module)  # type: ignore
+
+    def __getattr__(self, name):
+        """
+        If this method gets called, it means an attribute was not found on this
+        wrapper object, so we should look to the wrapped module to find that attribute.
+        """
+        module = super().__getattr__("module")
+        if name == "module":
+            return module
+
+        return getattr(module, name)
+
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        """ Simply call the wrapped module's state_dict method """
+        return self.module.state_dict(destination, prefix, keep_vars)
+
+    def get_args(self, args, kwargs):
+        """ Fill in defaults """
+        all_args = {}
+        for idx, param in enumerate(self.params):
+            # Set the argument to its default value first (if it has one)
+            if param.default != param.empty:
+                all_args[param.name] = param.default
+
+            # Override default value with any specified args
+            if idx < len(args):
+                all_args[param.name] = args[idx]
+
+            # Finally, override any specified keyword args
+            if param.name in kwargs:
+                all_args[param.name] = kwargs[param.name]
+
+        return tuple(all_args.values())
+
+    def forward(self, *args, **kwargs):  # pylint:disable=arguments-differ
+        retval = checkpoint.checkpoint(
+            self.checkpointed_forward, *self.get_args(args, kwargs)
         )
+        if self.as_list:
+            # If the huggingface/transformers code expects a list, convert the
+            # output from the function call from a tuple back to a list.
+            self.as_list = False  # reset for the next call to forward
+            return list(retval)
 
-    return wrapped_block
+        return retval
 
+    def checkpointed_forward(self, *args):
+        """ Run the module """
+        retval = self.module(*args)
+        if isinstance(retval, list):
+            # Some modules return a list, but the checkpoint API really does
+            # not like lists, so return a tuple instead, otherwise it errors
+            # out ¯\_(ツ)_/¯. Apparently, the underlying torch._C._FunctionBase
+            # that checkpointing is built on expects the return value to be a
+            # tuple of tensors...
+            self.as_list = True
+            return tuple(retval)
 
-def checkpointed_embedding(embed):
-    """
-    Call the wrapped module
-    """
-
-    def custom_forward(x):
-        return embed(x)
-
-    def wrapped_embedding(x):
-        return checkpoint.checkpoint(custom_forward, x)
-
-    return wrapped_embedding
-
-
-def fixup_names(  # pylint:disable=unused-argument
-    module, state_dict, prefix, local_metadata
-):
-    """
-    Fix the name of the keys in the state_dict caused by enabling gradient
-    checkpoints
-    """
-    for old_key, new_key in [
-        (k, k.replace("transformer._", "transformer.")) for k in state_dict.keys()
-    ]:
-        if old_key != new_key:
-            state_dict[new_key] = state_dict[old_key]
-            del state_dict[old_key]
-
-    return state_dict
+        return retval
 
 
 class GPT2SegmentedModel(GPT2LMHeadModel):
@@ -83,47 +120,42 @@ class GPT2SegmentedModel(GPT2LMHeadModel):
         segment_masks = inputs["segment_masks"].unsqueeze(-1)
         segments_embeds = self.wte(inputs["segments"]) * segment_masks
 
-        args = {
+        kwargs = {
             "inputs_embeds": self.wte(torch.max(tokens, tokens.new_zeros(1)))
             + segments_embeds.sum(1),
             "past": inputs.get("past", None),
             "labels": tokens if loss_only else None,
         }
 
-        outputs = super().forward(**args)
+        outputs = super().forward(**kwargs)
         return outputs[:1] if loss_only else outputs
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, level=1):
         """
-        A function that enables gradient checkpointing on each of the
-        transformer layers of the GPT2 model.
+        A function that enables gradient checkpointing for the GPT2 model.
         """
-        # pylint:disable=protected-access
-        # Save off the real module list
-        self.transformer._h = self.transformer.h
+        if level == 1:
+            for idx in range(len(self.transformer.h)):
+                self.transformer.h[idx] = CheckpointedModule(self.transformer.h[idx])
 
-        # Replace the module list with wrapper functions
-        del self.transformer.h  # Must first explicitly unset the variable
-        self.transformer.h = [
-            checkpointed_block(block) for block in self.transformer._h
-        ]
+        if level >= 2:
+            # Needed for training GPT-2 large on 2080Ti GPUs
+            module_stack = [self]
 
-        # Save off the real position embedding
-        self.transformer._wpe = self.transformer.wpe
+            # Store off the transformer module, because we wrap it in a
+            # CheckpointedModule below
+            transformer = self.transformer
+            while module_stack:
+                parent_module = module_stack.pop()
+                for name, module in parent_module.named_children():
+                    if parent_module == transformer and (
+                        name == "wpe" or name == "wte"
+                    ):
+                        # These modules provide embeddings for the inputs, and
+                        # seem to require normal gradients for the call to
+                        # backward() on the loss to work
+                        continue
 
-        # Replace the position embedding with wrapper functions
-        del self.transformer.wpe
-        self.transformer.wpe = checkpointed_embedding(self.transformer._wpe)
+                    setattr(parent_module, name, CheckpointedModule(module))
+                    module_stack.append(module)
 
-        # Save off the real token embedding
-        self.transformer._wte = self.transformer.wte
-
-        # Replace the token embedding with wrapper functions
-        del self.transformer.wte
-        self.transformer.wte = checkpointed_embedding(self.transformer._wte)
-
-        # Finally, need to make sure the state_dict we save has the correct
-        # name for the list of blocks, otherwise calling from_pretrained will
-        # fail to load the associated parameters
-        self.transformer._register_state_dict_hook(fixup_names)
-        # pylint:enable=protected-access

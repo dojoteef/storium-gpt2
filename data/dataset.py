@@ -163,7 +163,6 @@ class StoriumDataset(Dataset):
                     [filename, preprocessor],
                     {"naive_layout": naive_layout},
                 )
-                # type(self)._process(filename, preprocessor, naive_layout=naive_layout)
             )
         pool.close()
 

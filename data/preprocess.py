@@ -4,6 +4,7 @@ This file contains a number of utility methods for preprocessing stories.
 import os
 import glob
 import json
+import zlib
 import heapq
 import bisect
 import logging
@@ -582,6 +583,7 @@ class CharacterInfo:
 
     summary: Segment
     character_id: str
+    checksum: int
 
     # This is a sorted list of entry ids written by the character to
     # allow easily looking up the previous entries for the character
@@ -597,6 +599,7 @@ class EntryInfo:
     entry_id: str
     character_id: str
     establishment_id: str
+    checksum: int
     text: Segment
     summary: Segment
 
@@ -656,12 +659,14 @@ class ProcessedStory:
     establishment_entries: IndexedDict[EntryInfo]
 
 
-def extract_string(field: str, mapping: Dict[str, Any]) -> str:
+def extract_string(
+    field: str, mapping: Dict[str, Any], default: str = SpecialToken.missing.value
+) -> str:
     """
     Extract the given string field, accounting for the potential that it is
     specified as None
     """
-    return mapping.get(field, SpecialToken.missing) or SpecialToken.missing
+    return mapping.get(field, default) or default
 
 
 class Preprocessor:
@@ -736,6 +741,18 @@ class Preprocessor:
             trim=trim,
         )
 
+    def checksum_character(self, character: Dict[str, Any], character_id: str) -> int:
+        """
+        Compute a checksum of a character
+        """
+        checksum = zlib.adler32(character_id.encode("utf-8"))
+        for field in ("name", "description"):
+            checksum = zlib.adler32(
+                extract_string(field, character).encode("utf-8"), checksum
+            )
+
+        return checksum
+
     def summarize_character(self, character: Dict[str, Any]) -> Segment:
         """
         Create the summary for a character
@@ -753,6 +770,20 @@ class Preprocessor:
             ),
             segment_ids=[self.tokenizer.convert_tokens_to_ids(SpecialToken.character),],
         )
+
+    def checksum_card(self, card: Optional[Dict[str, Any]], checksum: int = 1) -> int:
+        """
+        Checksum the card.
+        """
+        if not card:
+            return checksum
+
+        for field in ("name", "description", "success_stakes", "failure_stakes"):
+            checksum = zlib.adler32(
+                extract_string(field, card).encode("utf-8"), checksum
+            )
+
+        return checksum
 
     def summarize_card(self, card: Optional[Dict[str, Any]]) -> Segment:
         """
@@ -779,11 +810,40 @@ class Preprocessor:
             ),
         )
 
+    def checksum_cards(self, cards: List[Dict[str, Any]], checksum: int = 1) -> int:
+        """
+        Create the summary of a card
+        """
+        for card in cards:
+            checksum = self.checksum_card(card, checksum)
+
+        return checksum
+
     def summarize_cards(self, cards: List[Dict[str, Any]]) -> Segment:
         """
         Create the summary of a card
         """
         return Segment(iter(self.summarize_card(card) for card in cards))
+
+    def checksum_entry(self, entry: Dict[str, Any], entry_id: str) -> int:
+        """
+        Compute a checksum of an entry
+        """
+        checksum = zlib.adler32(entry_id.encode("utf-8"))
+        entry_type = entry["format"]
+        if entry_type == "move":
+            checksum = self.checksum_card(entry.get("target_challenge_card"), checksum)
+            checksum = self.checksum_cards(
+                entry.get("cards_played_on_challenge", []), checksum
+            )
+        elif entry_type == "establishment":
+            checksum = self.checksum_card(entry.get("place_card"), checksum)
+        elif entry_type == "addition":
+            checksum = self.checksum_cards(entry.get("challenge_cards", []), checksum)
+
+        return zlib.adler32(
+            extract_string("description", entry, "").encode("utf-8"), checksum
+        )
 
     def summarize_entry(self, entry: Dict[str, Any]) -> Segment:
         """
@@ -818,12 +878,12 @@ class Preprocessor:
         )
 
     def process_entry(
-        self, entry: Dict[str, Any], establishment_id: str,
+        self, entry: Dict[str, Any], establishment_id: str, checksum: int
     ) -> Optional[EntryInfo]:
         """
         Process a character entry
         """
-        text = entry.get("description", "")
+        text = extract_string("description", entry, "")
         if not text and entry.get("format") != "establishment":
             # Only modeling moves with written text, though make a special
             # exception for establishment entries. While they are currently
@@ -847,6 +907,7 @@ class Preprocessor:
             )
 
         return EntryInfo(
+            checksum=checksum,
             entry_id=entry["seq_id"],
             character_id=entry["role"],
             establishment_id=establishment_id,
@@ -863,21 +924,29 @@ class Preprocessor:
 
         return self.process_story(story)
 
-    def process_story(self, story: Dict[str, Any]) -> Optional[ProcessedStory]:
+    def process_story(
+        self, story: Dict[str, Any], processed: Optional[ProcessedStory] = None
+    ) -> Optional[ProcessedStory]:
         """
-        Summarize a scene. Returns a list of summarized scene entries.
+        Summarize a story, potentially based off of a previously processed story.
+
+        Returns a ProcessedStory
         """
         scenes = story.get("scenes")
         characters = story.get("characters")
         if not scenes or not characters or not isinstance(scenes, Sequence):
-            return None
+            # Return whatever was previously processed (if anything)
+            return processed
 
         character_list = [
             # Treat narrator as a character who is always present without a summary
             (
                 "narrator",
                 CharacterInfo(
-                    entry_ids=IndexedSet(), character_id="narrator", summary=Segment(),
+                    checksum=0,
+                    entry_ids=IndexedSet(),
+                    character_id="narrator",
+                    summary=Segment(),
                 ),
             )
         ]
@@ -896,16 +965,24 @@ class Preprocessor:
             #   either 'narrator' or 'character:XYZ' where XYZ is the <CharacterSeqId>
             # See https://storium.com/help/export/json/0.9.2
             character_id = f"character:{character_id}"
-            character_list.append(
-                (
-                    character_id,
-                    CharacterInfo(
-                        entry_ids=IndexedSet(),
-                        character_id=character_id,
-                        summary=self.summarize_character(character),
-                    ),
-                )
+
+            # Get the previously processed character if any
+            character_info = (
+                processed.characters.get(character_id, None) if processed else None
             )
+
+            # Compute the checksum for the character
+            checksum = self.checksum_character(character, character_id)
+            if not character_info or character_info.checksum != checksum:
+                # Haven't processed this character before, so process it now
+                character_info = CharacterInfo(
+                    checksum=checksum,
+                    entry_ids=IndexedSet(),
+                    character_id=character_id,
+                    summary=self.summarize_character(character),
+                )
+
+            character_list.append((character_id, character_info,))
 
         all_characters = IndexedDict(character_list)
         entry_list: List[Tuple[str, EntryInfo]] = []
@@ -921,14 +998,26 @@ class Preprocessor:
                     # This would only happen with malformed data
                     continue
 
-                entry_format = entry.get("format")
-                entry_info = self.process_entry(
-                    entry, establishment_list[-1][0] if establishment_list else entry_id
+                # Compute the checksum for the entry
+                checksum = self.checksum_entry(entry, entry_id)
+
+                # Get the previously processed entry if any
+                entry_info = (
+                    processed.entries.get(entry_id, None) if processed else None
                 )
+                if not entry_info or entry_info.checksum != checksum:
+                    # Haven't processed this entry before, so process it now
+                    entry_info = self.process_entry(
+                        entry,
+                        establishment_list[-1][0] if establishment_list else entry_id,
+                        checksum,
+                    )
+
                 if not entry_info:
                     continue
 
                 entry_list.append((entry_id, entry_info))
+                entry_format = entry.get("format")
                 if entry_format == "establishment":
                     establishment_list.append((entry_id, entry_info))
 
@@ -1093,7 +1182,7 @@ def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
             entries = scene.get("entries", [])
             num_entries += len(entries)
             for entry in entries:
-                description = entry.get("description", "") or ""
+                description = extract_string("description", entry, "")
 
                 # We do a very simple tokenization that simply splits on whitespace to
                 # get a ballpark estimate of the length of the story, only looking at

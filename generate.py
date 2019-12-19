@@ -1,7 +1,6 @@
 """
 Generate from our Storium models
 """
-import os
 import sys
 import logging
 import argparse
@@ -37,16 +36,16 @@ class Generator:
         self.dataset: StoriumDataset
         self.tokenizer: PreTrainedTokenizer
 
-    def load(self, checkpoint_dir):
+    def load(self, checkpoint_path):
         """
         Load the model and tokenizer from the specified path
         """
         logging.info("Loading model")
-        config = GPT2Config.from_pretrained(checkpoint_dir)
+        config = GPT2Config.from_pretrained(checkpoint_path)
         config.output_past = True
 
         model = GPT2SegmentedModel.from_pretrained(
-            checkpoint_dir, config=config, cache_dir=self.args.cache_dir
+            checkpoint_path, config=config, cache_dir=self.args.cache_dir
         )
 
         if torch.cuda.is_available():

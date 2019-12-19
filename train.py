@@ -158,16 +158,23 @@ class Trainer:
         self.modules["optimizer"] = optimizer
         self.modules["scheduler"] = scheduler
 
+    @property
+    def checkpoint_path(self):
+        """
+        Return the current checkpoint path
+        """
+        return os.path.join(self.args.output_dir, f"checkpoint-{self.step}")
+
     def save(self):
         """
         Save all the tracked modules
         """
         # Save model checkpoint
-        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{self.step}",)
-        if not os.path.exists(checkpoint_dir):
-            os.makedirs(checkpoint_dir)
+        checkpoint_path = self.checkpoint_path
+        if not os.path.exists(checkpoint_path):
+            os.makedirs(checkpoint_path)
 
-        logging.info("Saving model checkpoint to %s", checkpoint_dir)
+        logging.info("Saving model checkpoint to %s", checkpoint_path)
 
         train_state: Dict[str, Any] = {"step": self.step}
         if self.use_fp16:
@@ -182,17 +189,17 @@ class Trainer:
 
         for name, module in self.modules.items():
             if name == "model":
-                module.save_pretrained(checkpoint_dir)
+                module.save_pretrained(checkpoint_path)
             else:
                 train_state[name] = module.state_dict()
 
         with open(
-            os.path.join(checkpoint_dir, "train_state.pt"), "wb"
+            os.path.join(checkpoint_path, "train_state.pt"), "wb"
         ) as train_state_file:
             torch.save(train_state, train_state_file)
 
         with open(
-            os.path.join(checkpoint_dir, "train_config.json"), "wt"
+            os.path.join(checkpoint_path, "train_config.json"), "wt"
         ) as train_config_file:
             json.dump(
                 self.args,
@@ -201,7 +208,18 @@ class Trainer:
                 default=lambda obj: getattr(obj, "__dict__", {}),
             )
 
-        self.metric_store.save(os.path.join(checkpoint_dir, "train_metrics.json"))
+        self.save_metrics()
+
+    def save_metrics(self):
+        """
+        Method to save metrics to the current checkpoint path
+        """
+        checkpoint_path = self.checkpoint_path
+        if not os.path.exists(checkpoint_path):
+            os.makedirs(checkpoint_path)
+
+        logging.info("Saving metrics to %s", checkpoint_path)
+        self.metric_store.save(os.path.join(checkpoint_path, "train_metrics.json"))
 
     def on_new_best(self):
         """
@@ -223,9 +241,6 @@ class Trainer:
         os.symlink(
             os.path.basename(new_best_checkpoint), best_checkpoint_path,
         )
-
-        # Save the latest metrics
-        self.metric_store.save(os.path.join(new_best_checkpoint, "train_metrics.json"))
 
     def prune_checkpoints(self) -> bool:
         """
@@ -259,35 +274,33 @@ class Trainer:
 
         return True
 
-    def load(self, checkpoint_dir: str):
+    def load(self, checkpoint_path: str):
         """
         Load from checkpoint
         """
-        train_config_filename = os.path.join(checkpoint_dir, "train_config.json")
-        if not os.path.isfile(train_config_filename):
-            raise RuntimeError(
-                f"Cannot find train config file: {train_config_filename}"
-            )
+        train_config_path = os.path.join(checkpoint_path, "train_config.json")
+        if not os.path.isfile(train_config_path):
+            raise RuntimeError(f"Cannot find train config file: {train_config_path}")
 
-        train_state_filename = os.path.join(checkpoint_dir, "train_state.pt")
-        if not os.path.isfile(train_state_filename):
-            raise RuntimeError(f"Cannot find train state file: {train_state_filename}")
+        train_state_path = os.path.join(checkpoint_path, "train_state.pt")
+        if not os.path.isfile(train_state_path):
+            raise RuntimeError(f"Cannot find train state file: {train_state_path}")
 
-        model_state_filename = os.path.join(checkpoint_dir, WEIGHTS_NAME)
-        if not os.path.isfile(model_state_filename):
-            raise RuntimeError(f"Cannot find model state file: {model_state_filename}")
+        model_state_path = os.path.join(checkpoint_path, WEIGHTS_NAME)
+        if not os.path.isfile(model_state_path):
+            raise RuntimeError(f"Cannot find model state file: {model_state_path}")
 
-        train_metrics_filename = os.path.join(checkpoint_dir, "train_metrics.json")
-        if not os.path.isfile(train_metrics_filename):
-            raise RuntimeError(f"Cannot find metrics file: {train_metrics_filename}")
+        train_metrics_path = os.path.join(checkpoint_path, "train_metrics.json")
+        if not os.path.isfile(train_metrics_path):
+            raise RuntimeError(f"Cannot find metrics file: {train_metrics_path}")
 
         # Must load the train config first
-        with open(train_config_filename, "rt") as config_file:
+        with open(train_config_path, "rt") as config_file:
             self.args = json.load(
                 config_file, object_hook=lambda obj: SimpleNamespace(**obj)
             )
 
-        train_state = torch.load(train_state_filename)
+        train_state = torch.load(train_state_path)
         if "amp" in train_state:
             # Need to load the automatic mixed precision state_dict. Calling
             # amp.load_state_dict requires initializing automatic mixed
@@ -303,7 +316,7 @@ class Trainer:
             # amp.load_state_dict last...
             amp.load_state_dict(train_state["amp"])
 
-        model_state = torch.load(model_state_filename)
+        model_state = torch.load(model_state_path)
         for name, module in self.modules.items():
             if name == "model":
                 module.load_state_dict(model_state)
@@ -311,7 +324,7 @@ class Trainer:
                 module.load_state_dict(train_state[name])
 
         self.step = train_state["step"]
-        self.metric_store.load(train_metrics_filename)
+        self.metric_store.load(train_metrics_path)
 
     def __call__(self):
         """
@@ -430,6 +443,10 @@ class Trainer:
 
                                     vnll = evaluator()
                                     vnll_metric.update(vnll)
+
+                                    # Save the updated metrics
+                                    self.save_metrics()
+
                                     if vnll == vnll_metric.min:
                                         self.on_new_best()
 

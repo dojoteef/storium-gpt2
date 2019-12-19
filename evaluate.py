@@ -63,14 +63,14 @@ class Evaluator:
             else experiment
         )
 
-    def load(self, checkpoint_dir):
+    def load(self, checkpoint_path):
         """
         Load the model, etc
         """
         logging.info("Loading model")
-        config = GPT2Config.from_pretrained(checkpoint_dir)
+        config = GPT2Config.from_pretrained(checkpoint_path)
         model = GPT2SegmentedModel.from_pretrained(
-            checkpoint_dir, config=config, cache_dir=self.args.cache_dir
+            checkpoint_path, config=config, cache_dir=self.args.cache_dir
         )
 
         if torch.cuda.is_available():

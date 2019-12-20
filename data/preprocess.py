@@ -30,9 +30,34 @@ from typing import (
 
 import torch
 from kiwisolver import Constraint, Solver, Variable, strength
-from transformers import PreTrainedTokenizer
+from transformers import (
+    AutoTokenizer,
+    BertTokenizer,
+    OpenAIGPTTokenizer,
+    GPT2Tokenizer,
+    TransfoXLTokenizer,
+    XLNetTokenizer,
+    XLMTokenizer,
+    RobertaTokenizer,
+    DistilBertTokenizer,
+    PreTrainedTokenizer,
+)
 
 SPLIT_NAMES = ("train", "validation", "test")
+AVAILABLE_TOKENIZERS = [
+    model
+    for tokenizer_type in (
+        BertTokenizer,
+        OpenAIGPTTokenizer,
+        GPT2Tokenizer,
+        TransfoXLTokenizer,
+        XLNetTokenizer,
+        XLMTokenizer,
+        RobertaTokenizer,
+        DistilBertTokenizer,
+    )
+    for model in tokenizer_type.max_model_input_sizes
+]
 
 
 ###############################################################################
@@ -1150,6 +1175,21 @@ def tensorize(
             return {k: tensorize(v) for k, v in nested.items()}
 
     return nested
+
+
+def get_tokenizer(tokenizer_name: str, cache_dir: Optional[str] = None):
+    """
+    Get a tokenizer for the dataset
+    """
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=cache_dir)
+
+    # Cannot specify "additional_special_tokens" in the call to
+    # from_pretrained, as that requires the tokens to already be in the
+    # vocabulary. Rather, making a call to add_special_tokens automatically
+    # adds the tokens to the vocabulary if they are not already present.
+    tokenizer.add_special_tokens({"additional_special_tokens": list(SpecialToken)})
+
+    return tokenizer
 
 
 def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:

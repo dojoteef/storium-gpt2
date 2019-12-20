@@ -507,7 +507,10 @@ class Trainer:
 
         # Update the experiment logs as well
         for name, metric in self.metric_store.items():
-            self.experiment.log_metric(name, metric.last_value)
+            if name == "oom":
+                self.experiment.log_metric(name, metric.total)
+            else:
+                self.experiment.log_metric(name, metric.last_value)
 
 
 def define_train_args(

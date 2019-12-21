@@ -912,6 +912,7 @@ class Preprocessor:
         entry: Dict[str, Any],
         establishment_id: str,
         checksum: int,
+        add_eos: bool = True,
         force: bool = False,
     ) -> Optional[EntryInfo]:
         """
@@ -930,7 +931,7 @@ class Preprocessor:
             text,
             SpecialToken.from_string(entry["format"]),
             preferred_length=self.preferred_entry_length,
-            eos_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id if add_eos else None,
         )
         summary = self.summarize_entry(entry)
         if not summary:

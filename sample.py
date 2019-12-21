@@ -2,7 +2,7 @@
 Generate samples from our Storium models
 """
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 import torch
 from torch.nn import functional as F
@@ -22,10 +22,10 @@ class SampleGenerator:
 
     def __init__(
         self,
-        top_k: int,
-        top_p: float,
-        temperature: float,
-        repetition_penalty: float,
+        top_k: int = 0,
+        top_p: float = 0.9,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.0,
         cache_dir: Optional[str] = None,
     ):
         """
@@ -93,23 +93,32 @@ class SampleGenerator:
         return logits
 
     def sample(
-        self, entries: EntryList, length: int = 256, max_length: int = 1024
+        self,
+        entries: EntryList,
+        lengths: Union[int, List[int]] = 256,
+        max_length: int = 1024,
     ) -> List[str]:
         """
         Sample entry text given the list of summaries up to the specified length
         """
+        if isinstance(lengths, int):
+            lengths = [lengths] * len(entries)
+
+        entry_lengths = [len(e["tokens"]) for e in entries]
+        desired_lengths = [
+            min(s + l, max_length) for s, l in zip(entry_lengths, lengths)
+        ]
+        num_steps = max(l - s for s, l in zip(entry_lengths, desired_lengths))
+
         with torch.no_grad():
             self.model.eval()
-            batch = collate(entries)
-            seq_length = batch["tokens"].shape[1]
-            batch = self.sample_first(batch)
-
-            final_length = min(seq_length + length, max_length)
-            desired_length = final_length - seq_length
-            done = [t.item() == self.tokenizer.eos_token_id for t in batch["tokens"]]
+            batch = self.sample_first(collate(entries))
             outputs = [t.tolist() for t in batch["tokens"]]
-            for _ in range(seq_length, final_length):
-                batch = self.sample_next(batch, outputs, desired_length)
+            done = [t.item() == self.tokenizer.eos_token_id for t in batch["tokens"]]
+
+            # Already completed one step of sampling above, so decrement steps by 1
+            for _ in range(num_steps - 1):
+                batch = self.sample_next(batch, outputs, desired_lengths)
                 for idx, (token, output) in enumerate(zip(batch["tokens"], outputs)):
                     next_token = token.item()
                     done[idx] = done[idx] or (next_token == self.tokenizer.eos_token_id)
@@ -159,11 +168,9 @@ class SampleGenerator:
         in the full context and generate the "past" hidden states.
         """
         lengths = batch["lengths"]
-        num_tokens = batch["num_tokens"]
-
-        batch_size = len(lengths)
         indices = torch.LongTensor(lengths)  # type:ignore
 
+        batch_size = len(lengths)
         outputs = self.model(batch)
         next_token = self.sample_logits(outputs[0][range(batch_size), indices - 1])
 
@@ -174,33 +181,34 @@ class SampleGenerator:
             "segments": next_token.new_full((batch_size, 1, 1), self.move_id),
             "segment_masks": next_token.new_ones((batch_size, 1, 1)),
             "lengths": [l + 1 for l in lengths],
-            "num_tokens": num_tokens + batch_size,
+            "num_tokens": batch["num_tokens"] + batch_size,
         }
 
     def sample_next(
-        self, batch: Dict[str, Any], generated: List[List[int]], desired_length: int
+        self,
+        batch: Dict[str, Any],
+        generated: List[List[int]],
+        desired_lengths: List[int],
     ) -> Dict[str, Any]:
         """
         Sample the next token for the passed in batch
         """
-        lengths = batch["lengths"]
-        num_tokens = batch["num_tokens"]
-
-        batch_size = len(lengths)
-
         outputs = self.model(batch)
         next_token = self.sample_logits(
             outputs[0][:, 0],
             generated=[set(tokens) for tokens in generated],
-            length_penalties=[len(tokens) / desired_length for tokens in generated],
+            length_penalties=[
+                len(tokens) / l for tokens, l in zip(generated, desired_lengths)
+            ],
         )
 
         # Return an updated batch
+        lengths = batch["lengths"]
         return {
             "past": outputs[1],
             "tokens": next_token.unsqueeze(-1),
             "segments": batch["segments"],
             "segment_masks": batch["segment_masks"],
             "lengths": [l + 1 for l in lengths],
-            "num_tokens": num_tokens + batch_size,
+            "num_tokens": batch["num_tokens"] + len(lengths),
         }

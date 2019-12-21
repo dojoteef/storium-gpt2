@@ -707,6 +707,7 @@ class Preprocessor:
         character_history: int = 0,
         max_length: int = 1024,
         preferred_entry_length: int = 256,
+        naive_layout: bool = False,
     ):
         """
         NOTE: The default max_length parameter was chosen to support GPT-2.
@@ -718,6 +719,7 @@ class Preprocessor:
 
         self.max_length = max_length
         self.preferred_entry_length = preferred_entry_length
+        self.naive_layout = naive_layout
 
     def encode(self, string_or_list: Union[str, List[str]]) -> List[int]:
         """
@@ -903,13 +905,17 @@ class Preprocessor:
         )
 
     def process_entry(
-        self, entry: Dict[str, Any], establishment_id: str, checksum: int
+        self,
+        entry: Dict[str, Any],
+        establishment_id: str,
+        checksum: int,
+        force: bool = False,
     ) -> Optional[EntryInfo]:
         """
         Process a character entry
         """
         text = extract_string("description", entry, "")
-        if not text and entry.get("format") != "establishment":
+        if not text and not force and entry.get("format") != "establishment":
             # Only modeling moves with written text, though make a special
             # exception for establishment entries. While they are currently
             # required to have text, it seems at some point there were games that
@@ -1059,15 +1065,14 @@ class Preprocessor:
             establishment_entries=IndexedDict(establishment_list),
         )
 
-    def get_entry_summary(self, story: ProcessedStory, entry_id: str) -> Segment:
+    def get_entry_summary(
+        self, story: ProcessedStory, entry_info: EntryInfo
+    ) -> Segment:
         """
         Extracts the context for a given entry
         """
         game_id = story.game_id
-        entry_info = story.entries.get(entry_id)
-        if not entry_info:
-            raise KeyError(f"Cannot find entry {entry_id} for story {game_id}!")
-
+        entry_id = entry_info.entry_id
         character_id = entry_info.character_id
         character_info = story.characters.get(character_id)
         if not character_info:
@@ -1139,19 +1144,15 @@ class Preprocessor:
 
         return Segment(summary)
 
-    def get_move(self, story: ProcessedStory, entry_id: str) -> Segment:
+    def get_move(self, story: ProcessedStory, entry_info: EntryInfo) -> Segment:
         """
         Extracts the context for a given entry
         """
-        entry_info = story.entries.get(entry_id)
-        if not entry_info:
-            raise KeyError(f"Cannot find entry {entry_id} for story {story.game_id}!")
-
         if entry_info.character_id == "narrator":
             # Only characters can do a normal "move"
             return Segment()
 
-        return Segment((self.get_entry_summary(story, entry_id), entry_info.text,))
+        return Segment((self.get_entry_summary(story, entry_info), entry_info.text))
 
 
 def tensorize(

@@ -56,9 +56,7 @@ class StoriumDataset(Dataset):
         return os.path.join(directory, f"storium_{self.split}.{self.tokenizer_name}.pt")
 
     @staticmethod
-    def _process(
-        filename: str, preprocessor: Preprocessor, naive_layout: bool = False
-    ) -> List[Dict[str, Any]]:
+    def _process(filename: str, preprocessor: Preprocessor) -> List[Dict[str, Any]]:
         """
         Process a single file and return the resulting entries
         """
@@ -68,12 +66,14 @@ class StoriumDataset(Dataset):
             logging.debug("Skipped %s", filename)
             return entries
 
-        for entry_id in story.entries.keys():
-            move = preprocessor.get_move(story, entry_id)
+        for entry_info in story.entries.values():
+            move = preprocessor.get_move(story, entry_info)
             if not move:
                 continue
 
-            with move.constraint(preprocessor.max_length, naive=naive_layout):
+            with move.constraint(
+                preprocessor.max_length, naive=preprocessor.naive_layout
+            ):
                 entries.append(move.asdict(with_stats=True))
 
         return entries
@@ -120,15 +120,14 @@ class StoriumDataset(Dataset):
         results = []
         pool = Pool()
         preprocessor = Preprocessor(
-            self.get_tokenizer(), history=history, character_history=character_history,
+            self.get_tokenizer(),
+            history=history,
+            character_history=character_history,
+            naive_layout=naive_layout,
         )
         for filename in filenames:
             results.append(
-                pool.apply_async(
-                    type(self)._process,
-                    [filename, preprocessor],
-                    {"naive_layout": naive_layout},
-                )
+                pool.apply_async(type(self)._process, [filename, preprocessor])
             )
         pool.close()
 

@@ -663,7 +663,10 @@ class IndexedDict(Dict[str, DataType]):
         """
         Return the index of the key
         """
-        return self.reverse_indices[key]
+        try:
+            return self.reverse_indices[key]
+        except KeyError:
+            raise ValueError(f"{key} not in dict")
 
 
 @dataclass
@@ -1092,13 +1095,29 @@ class Preprocessor:
                 )
             summary.append(establishment_info.summary)
 
-        end_index = max(0, character_info.entry_ids.index(entry_id) - 1)
+        try:
+            # Get the index of the entry for the character
+            end_index = max(0, character_info.entry_ids.index(entry_id) - 1)
+        except ValueError:
+            # If the entry cannot be found, then it is a new entry that hasn't
+            # been put into the character's list of entries, so use the index
+            # of the last character entry
+            end_index = len(character_info.entry_ids) - 1
+
         start_index = max(0, end_index - self.character_history)
         prev_entry_ids = IndexedSet(
             character_info.entry_ids[idx] for idx in range(start_index, end_index)
         )
 
-        end_index = max(0, story.entries.index(entry_id) - 1)
+        try:
+            # Get the index of the entry for the character
+            end_index = max(0, story.entries.index(entry_id) - 1)
+        except ValueError:
+            # If the entry cannot be found, then it is a new entry that hasn't
+            # been put into the story's list of entries, so use the index
+            # of the last story entry
+            end_index = len(story.entries) - 1
+
         start_index = max(0, end_index - self.history)
         for entry_index in range(start_index, end_index):
             prev_entry_ids.insert(story.entries.indices[entry_index])

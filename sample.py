@@ -98,6 +98,7 @@ class SampleGenerator:
         generated: Optional[List[Set[int]]] = None,
         lengths: Union[int, List[int]] = 256,
         max_length: int = 1024,
+        skip_special_tokens: bool = True,
     ) -> List[str]:
         """
         Sample entry text given the list of summaries up to the specified length
@@ -133,7 +134,10 @@ class SampleGenerator:
                     output.append(next_token)
                     generated[idx].add(next_token)
 
-        return [self.tokenizer.decode(output) for output in outputs]
+        return [
+            self.tokenizer.decode(output, skip_special_tokens=skip_special_tokens)
+            for output in outputs
+        ]
 
     def sample_logits(
         self,

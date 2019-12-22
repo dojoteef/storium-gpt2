@@ -87,7 +87,7 @@ class Generator:
         with tqdm_wrap_stdout():
             for batch_idx, batch in enumerate(batch_iterator):
                 summaries = self.extract_summary(batch)
-                samples = self.generator.sample(summaries)
+                samples = self.generator.sample(summaries, skip_special_tokens=False)
                 for idx, sample in enumerate(samples):
                     summary_length = len(summaries[idx]["tokens"])
                     context = self.generator.tokenizer.decode(

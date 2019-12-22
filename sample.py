@@ -95,12 +95,16 @@ class SampleGenerator:
     def sample(
         self,
         entries: EntryList,
+        generated: Optional[List[Set[int]]] = None,
         lengths: Union[int, List[int]] = 256,
         max_length: int = 1024,
     ) -> List[str]:
         """
         Sample entry text given the list of summaries up to the specified length
         """
+        if not generated:
+            generated = [set() for _ in range(len(entries))]
+
         if isinstance(lengths, int):
             lengths = [lengths] * len(entries)
 
@@ -112,13 +116,14 @@ class SampleGenerator:
 
         with torch.no_grad():
             self.model.eval()
-            batch = self.sample_first(collate(entries))
+            batch = self.sample_first(collate(entries), generated)
             outputs = [t.tolist() for t in batch["tokens"]]
+            generated = [g | set(o) for g, o in zip(generated, outputs)]
             done = [t.item() == self.tokenizer.eos_token_id for t in batch["tokens"]]
 
             # Already completed one step of sampling above, so decrement steps by 1
             for _ in range(num_steps - 1):
-                batch = self.sample_next(batch, outputs, desired_lengths)
+                batch = self.sample_next(batch, generated, desired_lengths)
                 for idx, (token, output) in enumerate(zip(batch["tokens"], outputs)):
                     next_token = token.item()
                     done[idx] = done[idx] or (next_token == self.tokenizer.eos_token_id)
@@ -126,6 +131,7 @@ class SampleGenerator:
                         continue
 
                     output.append(next_token)
+                    generated[idx].add(next_token)
 
         return [self.tokenizer.decode(output) for output in outputs]
 
@@ -162,7 +168,9 @@ class SampleGenerator:
             else torch.multinomial(F.softmax(logits, dim=-1), num_samples=1).squeeze(-1)
         )
 
-    def sample_first(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+    def sample_first(
+        self, batch: Dict[str, Any], generated: List[Set[int]]
+    ) -> Dict[str, Any]:
         """
         Sample the first token. The first token is a special case since we pass
         in the full context and generate the "past" hidden states.
@@ -172,7 +180,9 @@ class SampleGenerator:
 
         batch_size = len(lengths)
         outputs = self.model(batch)
-        next_token = self.sample_logits(outputs[0][range(batch_size), indices - 1])
+        next_token = self.sample_logits(
+            outputs[0][range(batch_size), indices - 1], generated=generated
+        )
 
         # Return an updated batch
         return {
@@ -187,7 +197,7 @@ class SampleGenerator:
     def sample_next(
         self,
         batch: Dict[str, Any],
-        generated: List[List[int]],
+        generated: List[Set[int]],
         desired_lengths: List[int],
     ) -> Dict[str, Any]:
         """
@@ -196,7 +206,7 @@ class SampleGenerator:
         outputs = self.model(batch)
         next_token = self.sample_logits(
             outputs[0][:, 0],
-            generated=[set(tokens) for tokens in generated],
+            generated=generated,
             length_penalties=[
                 len(tokens) / l for tokens, l in zip(generated, desired_lengths)
             ],

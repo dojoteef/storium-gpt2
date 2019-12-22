@@ -4,11 +4,10 @@ A very basic example of a figmentator
 import logging
 import traceback
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from figmentator.figment.base import Figmentator
 from figmentator.models.figment import FigmentContext
-from figmentator.models.range import RangeUnits
 from figmentator.models.storium import SceneEntry
 from figmentator.models.suggestion import SuggestionType
 
@@ -102,6 +101,7 @@ class GPT2Figmentator(Figmentator):
         """
         lengths: List[int] = []
         entries: List[SceneEntry] = []
+        generated: List[Set[int]] = []
         processed_entries: List[Dict[str, Any]] = []
         for context in contexts:
             story = context.data
@@ -140,11 +140,14 @@ class GPT2Figmentator(Figmentator):
 
             entries.append(entry)
             lengths.append(num_tokens)
+            generated.append(
+                set(self.preprocessor.tokenizer.encode(entry.description or ""))
+            )
             move = self.preprocessor.get_move(story, entry_info)
             with move.constraint(max_length, naive=self.preprocessor.naive_layout):
                 processed_entries.append(tensorize(move.asdict()))  # type:ignore
 
-        samples = self.generator.sample(processed_entries, lengths)
+        samples = self.generator.sample(processed_entries, generated, lengths)
         for entry, sample in zip(entries, samples):
             entry.description = (entry.description or "") + sample
 

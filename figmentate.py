@@ -120,17 +120,11 @@ class GPT2Figmentator(Figmentator):
                 logging.warning("Failed to generate text: no range end specified")
                 continue
 
-            text = entry.description or ""
-            idx = (
-                len(text.split())
-                if context.range.unit == RangeUnits.words
-                else len(NFC(text))
+            num_tokens = (
+                text_range.end - text_range.start
+                if text_range.start
+                else text_range.end
             )
-            if text_range.start is not None and text_range.start != idx:
-                logging.warning("Failed to generate text: invalid range specified")
-                continue
-
-            num_tokens = text_range.end if text_range.start else idx + text_range.end
             max_length = self.preprocessor.max_length - num_tokens
 
             entry_info = self.preprocessor.process_entry(

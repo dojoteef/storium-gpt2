@@ -199,7 +199,7 @@ class Segment(tuple):
         # Initialize the layout related variables before iterating over the
         # newly created tuple. It must be unconstrained to begin with.
         self.trim = trim
-        self.constrained = False
+        self.length = None
         self.naive_max_length = -1
         self.preferred_length = preferred_length
 
@@ -209,16 +209,11 @@ class Segment(tuple):
         self.eos = eos
 
         all_ints = all(isinstance(t, int) for t in self)
-        if not (all_ints or all(isinstance(t, Segment) for t in self)):
+        all_segments = all(isinstance(t, Segment) for t in self)
+        if not (all_ints or all_segments):
             raise ValueError(
                 f"{cls.__name__}() only accepts a homogenous sequence of int or {cls.__name__}"
             )
-
-        # If the segment only contains tokens ids, then it can be constrained.
-        # Have to additionally include the check that the unconstrained
-        # length is positive, because python's all() returns True for empty
-        # collections.
-        self.length = Variable() if all_ints and self.unconstrained_length else None
 
         self.segment_ids = tuple(segment_ids)
         if not all(isinstance(t, int) for t in segment_ids):
@@ -236,7 +231,7 @@ class Segment(tuple):
             if isinstance(segment, Segment):
                 constraints.extend(segment.hard_constraints)
 
-        if self.constrained and self.length:
+        if self.length:
             # Get the underlying length of the data
             length = self.unconstrained_length
 
@@ -258,7 +253,7 @@ class Segment(tuple):
             if isinstance(segment, Segment):
                 constraints.extend(segment.medium_constraints)
 
-        if self.constrained and self.length:
+        if self.length:
             # Get the underlying length of the data
             length = self.unconstrained_length
 
@@ -283,7 +278,7 @@ class Segment(tuple):
             if isinstance(segment, Segment):
                 constraints.extend(segment.strong_constraints)
 
-        if self.constrained and self.length:
+        if self.length:
             # Very strongly try to stay close to the preferred length
             if self.preferred_length:
                 constraints.append(
@@ -309,7 +304,7 @@ class Segment(tuple):
 
             return unconstrained_length
 
-        if not self.constrained or not self.length:
+        if not self.length:
             return unconstrained_length
 
         return int(self.length.value()) or unconstrained_length
@@ -390,7 +385,7 @@ class Segment(tuple):
         A generator which yields all token ids within the segment recursively,
         along with their associated segment ids, which respects max length.
         """
-        if self.constrained and self.naive_max_length >= 0:
+        if self.length and self.naive_max_length >= 0:
             return islice(self._token_segments, self.naive_max_length)
 
         return self._token_segments
@@ -450,14 +445,22 @@ class Segment(tuple):
 
         DO NOT CALL THIS DIRECTLY!
         """
+        all_ints = False
         for segment in self:
-            if isinstance(segment, Segment):
-                segment._mark_constrained(  # pylint:disable=protected-access
-                    constrained, max_length
-                )
+            if not isinstance(segment, Segment):
+                # __new__ only accepts a homogenous sequence of int or Segment,
+                # so if an element is not a Segment, then this Segment must
+                # contain only ints
+                all_ints = True
+                break
 
-        self.constrained = constrained
+            segment._mark_constrained(  # pylint:disable=protected-access
+                constrained, max_length
+            )
+
+        # If the segment only contains tokens ids, then it can be constrained.
         self.naive_max_length = max_length
+        self.length = Variable() if constrained and all_ints else None
 
     def _constrain(self, max_length: int):
         """
@@ -639,7 +642,7 @@ class IndexedDict(Dict[str, DataType]):
     reverse_indices: Dict[str, int]
 
     def __init__(
-        self, mapping: Union[Iterable[Tuple[str, DataType]], Mapping[str, DataType]],
+        self, mapping: Union[Iterable[Tuple[str, DataType]], Mapping[str, DataType]]
     ):
         super().__init__()
         self.indices = []
@@ -652,6 +655,9 @@ class IndexedDict(Dict[str, DataType]):
             self.indices.append(key)
             self.reverse_indices[key] = idx
             super().__setitem__(key, value)  # pylint:disable=no-member
+
+    def __reduce__(self):
+        return (type(self), (dict(self),))
 
     def __delitem__(self, key: str):
         raise RuntimeError("IndexedDict is immutable!")

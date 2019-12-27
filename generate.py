@@ -19,14 +19,15 @@ from asyncio import (
     set_event_loop,
     TimeoutError as AsyncTimeoutError,
 )
+from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm
 
 from data.dataset import StoriumDataset
 from data.preprocess import SPLIT_NAMES
-from data.utils import EntryList, narrow
+from data.utils import narrow
 from sample import SampleGenerator
-from utils import grouper, tqdm_wrap_stdout
+from utils import tqdm_wrap_stdout
 
 
 class Scheduler:
@@ -49,10 +50,11 @@ class Scheduler:
         self.wait_time = wait_time
         self.batch_size = batch_size
         self.sample_length = sample_length
+        self.generator = generator
 
         self.loop = get_event_loop()
         self.queue: Queue = Queue()
-        self.generator = generator
+        self.pool = ThreadPoolExecutor(max_workers=num_workers)
         self.workers = [ensure_future(self.main_loop()) for _ in range(num_workers)]
 
     async def main_loop(self):
@@ -67,7 +69,7 @@ class Scheduler:
 
             futures, batch, summaries = zip(*tasks)
             results = await self.loop.run_in_executor(
-                None,
+                self.pool,
                 partial(
                     self.generator.sample,
                     lengths=self.sample_length,

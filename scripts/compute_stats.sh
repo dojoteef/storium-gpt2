@@ -111,6 +111,12 @@ write_stats() {
   echo "#$1: $STATS"
 }
 
+filter_stats() {
+  # Use a 95% confidence interval
+  INTERVAL=$(awk -F '[=, ]+' '{mean=$4; std=$6;} END {printf "%f", mean + 1.96 * std}' <<<"$2")
+  awk '$1 > '"$INTERVAL"' {next;} $0' < "$1"
+}
+
 extract_total() {
   echo "$@" | awk -F '[=, ]+' '{printf $2}'
 }
@@ -145,6 +151,15 @@ compute_stats_and_plot() {
   #shellcheck disable=SC2064
   trap "rm -rf $TEMPFILE" EXIT TERM RETURN
   STATS="$(tee "$TEMPFILE" | compute_stats)"
+
+  if [[ "$2" == "nofilter" ]]; then
+    TEMPFILE2="$TEMPFILE"
+  else
+    TEMPFILE2="$(mktemp)"
+    #shellcheck disable=SC2064
+    trap "rm -rf $TEMPFILE2" EXIT TERM RETURN
+    filter_stats "$TEMPFILE" "$STATS" > "$TEMPFILE2"
+  fi
 
   PREV_DIR="$PWD"
   cd "$OUTPUT_DIR" || exit
@@ -186,7 +201,7 @@ set xrange[0:]
 binstart=0
 binwidth=$BINWIDTH
 load '$CURRENT_DIR/hist.fct'
-plot "$TEMPFILE" i 0 @hist ls 1
+plot "$TEMPFILE2" i 0 @hist ls 1
 EOF
 
   cd "$PREV_DIR" || exit
@@ -223,7 +238,7 @@ process_stories "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | a
 process_stories "'.scenes[].entries | map(select(.place_card != null)) | length'" | compute_stats | write_stats "location cards played by narrators"
 process_stories "'.scenes[].entries[].challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" | write_stats "challenge cards played by narrators"
 process_stories "'.scenes[].entries[].cards_played_on_challenge | length'" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters"
-process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" | write_stats "wild cards played by characters"
+process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" "nofilter" | write_stats "wild cards played by characters"
 process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for != \"new\")) | length'" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters"
 process_stories "'[.scenes[].entries[].cards_played_on_challenge | length] | add | select(. == 0)'" | wc -l | write_stats "stories played without cards"
 

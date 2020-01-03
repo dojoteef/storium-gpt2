@@ -2,6 +2,7 @@
 # gnuplot macro for providing a functionality similar to the hist() function in octave
 # Note, that the variables binwidth and binstart has to be set before calling this function
 # AUTHOR: Hagen Wierstorf
+# See http://www.gnuplotting.org/calculating-histograms/
 
 # set width of single bins in histogram
 set boxwidth 0.9*binwidth

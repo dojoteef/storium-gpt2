@@ -113,20 +113,20 @@ write_stats() {
 
 filter_stats() {
   # Use a 95% confidence interval
-  INTERVAL=$(awk -F '[=, ]+' '{mean=$4; std=$6;} END {printf "%f", mean + 1.96 * std}' <<<"$2")
-  awk '$1 > '"$INTERVAL"' {next;} $0' < "$1"
+  INTERVAL="$(awk -F '[=, ]+' '{mean=$4; std=$6; ci=mean + 1.96 * std + 1;} END {printf "%f", ci}' <<<"$2")"
+  awk '$1 <= '"$INTERVAL"' $1' < "$1"
 }
 
 extract_total() {
-  echo "$@" | awk -F '[=, ]+' '{printf $2}'
+  awk -F '[=, ]+' '{printf $2}' <<<"$@"
 }
 
 extract_mean() {
-  echo "$@" | awk -F '[=, ]+' '{printf $4}'
+  awk -F '[=, ]+' '{printf $4}' <<<"$@"
 }
 
 extract_std() {
-  echo "$@" | awk -F '[=, ]+' '{printf $6}'
+  awk -F '[=, ]+' '{printf $6}' <<<"$@"
 }
 
 sum_totals() {
@@ -152,14 +152,10 @@ compute_stats_and_plot() {
   trap "rm -rf $TEMPFILE" EXIT TERM RETURN
   STATS="$(tee "$TEMPFILE" | compute_stats)"
 
-  if [[ "$2" == "nofilter" ]]; then
-    TEMPFILE2="$TEMPFILE"
-  else
-    TEMPFILE2="$(mktemp)"
-    #shellcheck disable=SC2064
-    trap "rm -rf $TEMPFILE2" EXIT TERM RETURN
-    filter_stats "$TEMPFILE" "$STATS" > "$TEMPFILE2"
-  fi
+  TEMPFILE2="$(mktemp)"
+  #shellcheck disable=SC2064
+  trap "rm -rf $TEMPFILE2" EXIT TERM RETURN
+  filter_stats "$TEMPFILE" "$STATS" > "$TEMPFILE2"
 
   PREV_DIR="$PWD"
   cd "$OUTPUT_DIR" || exit
@@ -168,7 +164,7 @@ compute_stats_and_plot() {
   PLOT_FILENAME="${1,,}"
   PLOT_FILENAME="figs/${PLOT_FILENAME//[ \/]/_}"
 
-  BINWIDTH="$(echo "($(extract_std "$STATS") + 2) / 2" | bc)"
+  BINWIDTH="$(bc <<<"($(extract_std "$STATS") + 2) / 2")"
   IFS=',' read -ra STATS_ARRAY <<< "$STATS"
 
   make_label() {
@@ -186,9 +182,23 @@ compute_stats_and_plot() {
 set size 0.65, 0.65
 set output "$PLOT_FILENAME.tex"
 set term epslatex color colortext
+$([[ -n "$3" ]] && echo "set logscale y $3" || echo "")
 
 set style data histograms
 set style histogram cluster
+
+# colors
+set style line 1 lt 1 lc "blue"
+
+# axes
+set style line 11 lc "black" lt 1
+set border 3 front ls 11
+set tics nomirror out scale 0.75
+
+# grid
+set style line 12 lc rgb 0x888888 lt 0 lw 1
+set grid back ls 12
+set grid xtics ytics mxtics
 
 set key noautotitle
 ${STAT_LABELS[*]}
@@ -196,7 +206,7 @@ ${STAT_LABELS[*]}
 set xlabel "$1"
 set ylabel "Count"
 set xtics rotate by -45
-set xrange[0:]
+set xrange[0:$2]
 
 binstart=0
 binwidth=$BINWIDTH
@@ -224,7 +234,7 @@ compute_player_stats () {
 
 compute_player_stats
 process_stories "'.scenes | length'" | compute_stats | write_stats "scenes"
-process_stories "'.scenes[].entries | length'" | compute_stats_and_plot "Entries per Scene" | write_stats "scene entries"
+process_stories "'.scenes[].entries | length'" | compute_stats_and_plot "Entries per Scene" 300 2 | write_stats "scene entries"
 
 BOOL2INT='def bool2int: if . == true then 1 else 0 end'
 #shellcheck disable=SC2016
@@ -233,13 +243,16 @@ PLAYED_CARDS='(.scenes[].entries[].place_card, .scenes[].entries[].challenge_car
 #shellcheck disable=SC2016
 IS_USER_CREATED='select(.is_wild == false) | [(((.author_user_pid | select(. != null)) | in($users)), (.is_edited | select(. == true)))] | any | bool2int'
 process_stories "'$BOOL2INT; $USER_PIDS | [.cards[] | $IS_USER_CREATED] | add'" | compute_stats_and_plot "Cards Created/Edited per Story" | write_stats "cards created/edited"
-process_stories "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | add'" | compute_stats_and_plot "Played Cards Created/Edited per Story" | write_stats "played cards created/edited by users"
+process_stories "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | add'" | compute_stats_and_plot "Played Cards Created/Edited per Story" 180 2 | write_stats "played cards created/edited by users"
 
-process_stories "'.scenes[].entries | map(select(.place_card != null)) | length'" | compute_stats | write_stats "location cards played by narrators"
-process_stories "'.scenes[].entries[].challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" | write_stats "challenge cards played by narrators"
-process_stories "'.scenes[].entries[].cards_played_on_challenge | length'" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters"
-process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" "nofilter" | write_stats "wild cards played by characters"
-process_stories "'.scenes[].entries[].cards_played_on_challenge | map(select(.via_wild_exchanged_for != \"new\")) | length'" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters"
+NARRATOR_ENTRIES=".scenes[].entries | map(select(.author_is_narrator_when_published))"
+CHARACTER_ENTRIES=".scenes[].entries | map(select(.author_is_narrator_when_published | not))"
+CHARACTER_CARDS="$CHARACTER_ENTRIES[] | .cards_played_on_challenge"
+process_stories "'$NARRATOR_ENTRIES | map(select(.place_card != null)) | length'" | compute_stats | write_stats "location cards played by narrators"
+process_stories "'$NARRATOR_ENTRIES[] | .challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" 25 2 | write_stats "challenge cards played by narrators"
+process_stories "'$CHARACTER_CARDS | length'" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters"
+process_stories "'$CHARACTER_CARDS | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" | write_stats "wild cards played by characters"
+process_stories "'$CHARACTER_CARDS | map(select(.via_wild_exchanged_for != \"new\")) | length'" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters"
 process_stories "'[.scenes[].entries[].cards_played_on_challenge | length] | add | select(. == 0)'" | wc -l | write_stats "stories played without cards"
 
 CHARACTERS='.characters[].description'
@@ -252,12 +265,12 @@ REGULAR_CARDS='.scenes[].entries[].cards_played_on_challenge | map(select(.via_w
 # Very simple tokenizer, equivalent to https://www.nltk.org/api/nltk.tokenize.html#nltk.tokenize.regexp.WordPunctTokenizer
 TOKENIZER='select(. != null) | match("\\w+|[^\\w\\s]+"; "g") | .string'
 
-process_stories "'$CHARACTERS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Character Description" | write_stats "tokens in character descriptions"
-process_stories "'$SCENES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Scene Entry" | write_stats "tokens in scene entries"
-process_stories "'$LOCATIONS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Location Card" | write_stats "tokens in played location cards"
-process_stories "'$CHALLENGES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Challenge Card" | write_stats "tokens in played challenge cards"
-process_stories "'$REGULAR_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Regular Card" | write_stats "tokens in played regular cards"
-process_stories "'$WILD_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Wild Card" | write_stats "tokens in played wild cards"
+process_stories "'$CHARACTERS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Character Description" 5000 2 | write_stats "tokens in character descriptions"
+process_stories "'$SCENES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Scene Entry" 20000 2 | write_stats "tokens in scene entries"
+process_stories "'$LOCATIONS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Location Card" 140 2 | write_stats "tokens in played location cards"
+process_stories "'$CHALLENGES | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Challenge Card" 225 2 | write_stats "tokens in played challenge cards"
+process_stories "'$REGULAR_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Regular Card" 225 2 | write_stats "tokens in played regular cards"
+process_stories "'$WILD_CARDS | [$TOKENIZER] | length'" | compute_stats_and_plot "Tokens per Played Wild Card" 160 2 | write_stats "tokens in played wild cards"
 
 process_stories "-r" "'$CHARACTERS, $SCENES, $LOCATIONS, $CHALLENGES | $TOKENIZER'" | \
   awk -F '\n' '{for(i = 1; i <= NF; i++) {a[$i]++}} END {for(k in a) print  k, a[k]}' | wc -l | write_stats "unique tokens"

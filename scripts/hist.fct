@@ -7,6 +7,6 @@
 # set width of single bins in histogram
 set boxwidth 0.9*binwidth
 # set fill style of bins
-set style fill solid 0.5
+set style fill transparent solid 0.5 border -1
 # define macro for plotting the histogram
 hist = 'u (binwidth*(floor(($1-binstart)/binwidth)+0.5)+binstart):(1.0) smooth freq w boxes'

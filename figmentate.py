@@ -3,7 +3,6 @@ A very basic example of a figmentator
 """
 import logging
 import traceback
-import unicodedata
 from typing import Any, Dict, List, Optional, Set
 
 from figmentator.figment.base import Figmentator
@@ -13,16 +12,6 @@ from figmentator.models.suggestion import SuggestionType
 
 from data.preprocess import Preprocessor, tensorize
 from sample import SampleGenerator
-
-
-def NFC(text):  # pylint:disable=invalid-name
-    """
-    Normalize the unicode string into NFC form
-
-    Read more about that here:
-    https://docs.python.org/3/library/unicodedata.html#unicodedata.normalize
-    """
-    return unicodedata.normalize("NFC", text)
 
 
 class GPT2Figmentator(Figmentator):
@@ -95,7 +84,7 @@ class GPT2Figmentator(Figmentator):
         """
         return self.preprocessor.process_story(story_snapshot, processed=data)
 
-    def figmentate(self, contexts: List[FigmentContext]) -> List[SceneEntry]:
+    def figmentate(self, contexts: List[FigmentContext]) -> List[Optional[SceneEntry]]:
         """
         This method should generate a figment for each context in the list.
         """
@@ -106,6 +95,7 @@ class GPT2Figmentator(Figmentator):
         for context in contexts:
             story = context.data
             entry = context.entry.copy()
+            entries.append(None)
 
             if not context.range:
                 logging.warning("Failed to generate text: no range specified")
@@ -138,7 +128,7 @@ class GPT2Figmentator(Figmentator):
                 logging.warning("Unable to process entry: Failed to generate text.")
                 continue
 
-            entries.append(entry)
+            entries[-1] = entry
             lengths.append(num_tokens)
             generated.append(
                 set(self.preprocessor.tokenizer.encode(entry.description or ""))

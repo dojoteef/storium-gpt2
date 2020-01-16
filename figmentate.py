@@ -94,7 +94,7 @@ class GPT2Figmentator(Figmentator):
         processed_entries: List[Dict[str, Any]] = []
         for context in contexts:
             story = context.data
-            entry = context.entry.copy()
+            entry = context.entry
             entries.append(None)
 
             if not context.range:

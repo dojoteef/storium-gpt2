@@ -3,18 +3,17 @@ A very basic example of a figmentator
 """
 import logging
 import traceback
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-from figmentator.figment.base import Figmentator
+from figmentator.figment.base import CharacterEntryFigmentator
 from figmentator.models.figment import FigmentContext
-from figmentator.models.storium import SceneEntry
 from figmentator.models.suggestion import SuggestionType
 
 from data.preprocess import Preprocessor, tensorize
 from sample import SampleGenerator
 
 
-class GPT2Figmentator(Figmentator):
+class GPT2Figmentator(CharacterEntryFigmentator):
     """
     Figmentator for GPT2 baseline models generates scene_entry suggestions
     """
@@ -26,6 +25,7 @@ class GPT2Figmentator(Figmentator):
 
         super().__init__(suggestion_type)
 
+        self.rate: int
         self.generator: SampleGenerator
         self.preprocessor: Preprocessor
 
@@ -48,11 +48,15 @@ class GPT2Figmentator(Figmentator):
             preprocessor = Preprocessor(
                 generator.tokenizer, **properties.get("preprocess", {})
             )
+
+            # Get the number of tokens to create per update
+            rate = properties.get("rate", 25)
         except Exception:  # pylint:disable=broad-except
             logging.error(traceback.format_exc())
             return False
 
         # Finally set the class attributes
+        self.rate = rate
         self.generator = generator
         self.preprocessor = preprocessor
 
@@ -84,61 +88,41 @@ class GPT2Figmentator(Figmentator):
         """
         return self.preprocessor.process_story(story_snapshot, processed=data)
 
-    def figmentate(self, contexts: List[FigmentContext]) -> List[Optional[SceneEntry]]:
+    def process(self, context: FigmentContext) -> Optional[Dict[str, Any]]:
         """
-        This method should generate a figment for each context in the list.
+        This method performs any processing needed before generating a suggestion
         """
-        lengths: List[int] = []
-        entries: List[SceneEntry] = []
-        generated: List[Set[int]] = []
-        processed_entries: List[Dict[str, Any]] = []
-        for context in contexts:
-            story = context.data
-            entry = context.entry
-            entries.append(None)
+        entry = context.entry
+        story = context.data
+        entry_info = self.preprocessor.process_entry(
+            entry.dict(),
+            story.establishment_entries.indices[-1],
+            0,
+            add_eos=False,
+            force=True,
+        )
+        if not entry_info:
+            logging.warning("Unable to process entry: Failed to generate text.")
+            return None
 
-            if not context.range:
-                logging.warning("Failed to generate text: no range specified")
-                continue
+        move = self.preprocessor.get_move(story, entry_info)
+        with move.constraint(
+            self.preprocessor.max_length - self.rate,
+            naive=self.preprocessor.naive_layout,
+        ):
+            return {
+                "tokens": tensorize(move.asdict()),
+                "generated": set(
+                    self.preprocessor.tokenizer.encode(entry.description or "")
+                ),
+                "length": self.rate,
+            }
 
-            if len(context.range.ranges) > 1:
-                logging.warning("Failed to generate text: too many ranges specified")
-                continue
+    def sample(self, processed: List[Dict[str, Any]]) -> List[str]:
+        """
+        This method generates a batch of character entry text
+        """
+        if not processed:
+            return []
 
-            text_range = context.range.ranges[0]
-            if not text_range.end:
-                logging.warning("Failed to generate text: no range end specified")
-                continue
-
-            num_tokens = (
-                text_range.end - text_range.start
-                if text_range.start
-                else text_range.end
-            )
-            max_length = self.preprocessor.max_length - num_tokens
-
-            entry_info = self.preprocessor.process_entry(
-                entry.dict(),
-                story.establishment_entries.indices[-1],
-                0,
-                add_eos=False,
-                force=True,
-            )
-            if not entry_info:
-                logging.warning("Unable to process entry: Failed to generate text.")
-                continue
-
-            entries[-1] = entry
-            lengths.append(num_tokens)
-            generated.append(
-                set(self.preprocessor.tokenizer.encode(entry.description or ""))
-            )
-            move = self.preprocessor.get_move(story, entry_info)
-            with move.constraint(max_length, naive=self.preprocessor.naive_layout):
-                processed_entries.append(tensorize(move.asdict()))  # type:ignore
-
-        samples = self.generator.sample(processed_entries, generated, lengths)
-        for entry, sample in zip(entries, samples):
-            entry.description = (entry.description or "") + sample
-
-        return entries
+        return self.generator.sample(*zip(*(p.values() for p in processed)))

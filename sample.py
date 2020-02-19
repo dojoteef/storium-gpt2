@@ -124,6 +124,10 @@ class SampleGenerator:
 
             # Already completed one step of sampling above, so decrement steps by 1
             for _ in range(num_steps - 1):
+                if all(done):
+                    # Break out early if all samples have been generated
+                    break
+
                 batch = self.sample_next(batch, generated, desired_lengths)
                 for idx, (token, output) in enumerate(zip(batch["tokens"], outputs)):
                     next_token = token.item()

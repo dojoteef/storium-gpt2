@@ -179,7 +179,7 @@ class Segment(tuple):
     length: Optional[Variable]
 
     # A constant defining the min length of a text segment (it can be shorter
-    # if the underlying data is shorter than than constant).
+    # if the underlying data is shorter than that constant).
     MIN_LENGTH = 100
 
     def __new__(

@@ -2,6 +2,8 @@
 
     We would like to analyze the narrative paths in each world by looking at topic transitions in each world
 
+    refactor to make inference faster
+
 '''
 
 
@@ -163,8 +165,7 @@ for idx, line in enumerate( lines ):
     if line_split[:3] == 'unk':
         idx_filter_off.append(idx)
 
-#
-#
+
 # for starting in range(num_topics):
 #     print('\n\n')
 #     print( '=' * 100)

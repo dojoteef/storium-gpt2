@@ -59,12 +59,9 @@ parser.add_argument('--ignore_none_world', action='store_true')
 parser.add_argument('--bert_data_path', type=str, default='./bert_data')
 parser.add_argument('--glove_data_path', type=str, default='/scratch/datasets/cc_glove')
 parser.add_argument('--glove_file_name', type=str, default='glove.840B.300d.txt')
-parser.add_argument('--splits_info_path', type=str, default='/scratch/datasets/storium')
-parser.add_argument('--full_export_data_path', type=str, default='/scratch/datasets/storium/full_export_data')
+parser.add_argument('--splits_info_path', type=str, default='/data/datasets/storium')
+parser.add_argument('--full_export_data_path', type=str, default='/data/datasets/storium/full_export_data')
 parser.add_argument('--saved_model_path', type=str, default='')
-
-
-
 parser.add_argument('--stored_data_path', type=str, default='./pooled_entry_challenge_data')
 parser.add_argument('--type_text', type=str, default='entry_challenge_pooled')
 
@@ -73,11 +70,6 @@ parser.add_argument('--type_text', type=str, default='entry_challenge_pooled')
 
 
 args = parser.parse_args()
-if args.type_text == 'entry':
-    args.type_text = args.type_text + '_'
-
-
-
 
 
 # fix random seed for python, numpy and torch to ensure reproducibility
@@ -311,14 +303,31 @@ text_ids = [sent for (sent, _) in textID_world_list]
 # when a given example belongs to a big world, select other examples from that particular world
 #
 ####################################################################################
+
+
+with open( os.path.join( './final_filter', 'freq_result.pkl'), 'rb') as f:
+    freq_result = pickle.load(f)
+
+
+freq_most_common = freq_result.most_common()
+freq_reverse = list(reversed(freq_most_common))
+
+to_be_removed = []
+for (wordid, count) in freq_reverse:
+    if count < 30:
+        to_be_removed.append(wordid)
+
+
+
 input_vector_world_id_list = []
 for i in range( len(textID_worldID_list) ): # loop over each challenge
 
     sent = textID_worldID_list[i][0]
     if len(sent) > 0:
-        vectors = [ embedding_matrix_np[word_id, :] for word_id in sent ]
-        vector_mean = np.mean(vectors, axis=0)
-    input_vector_world_id_list.append((vector_mean, textID_worldID_list[i][1]))
+        vectors = [ embedding_matrix_np[word_id, :] for word_id in sent if word_id not in to_be_removed]
+        if len(vectors) > 0:
+            vector_mean = np.mean(vectors, axis=0)
+            input_vector_world_id_list.append((vector_mean, textID_worldID_list[i][1]))
 
 
 
@@ -408,7 +417,7 @@ if TRAINING_MODEL:
             net.interpret_dictionary()
             print('=' * 70)
             print('Topics with probability argmax: ')
-            net.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np)
+            net.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np, to_be_removed=[])
             print('=' * 70)
         print()
         print()
@@ -421,7 +430,7 @@ if TRAINING_MODEL:
     net.interpret_dictionary()
     print('=' * 70)
     print('Topics with probability argmax: ')
-    net.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np)
+    net.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np, to_be_removed=[])
 
 
     if args.saved_model_path != '':

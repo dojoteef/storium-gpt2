@@ -13,9 +13,9 @@ import nltk
 import spacy
 import numpy as np
 from collections import Iterable
-
-spacy.load('en')
-from spacy.lang.en import English
+import tqdm
+# spacy.load('en')
+# from spacy.lang.en import English
 nltk.download('wordnet')
 from nltk.corpus import wordnet as wn
 from nltk.stem.wordnet import WordNetLemmatizer
@@ -23,18 +23,84 @@ nltk.download('stopwords')
 en_stop = set(nltk.corpus.stopwords.words('english'))
 add_words = ('failure_stakes', 'success_stakes', 'obstacle', 'challenge', 'outcome', 'something')
 en_stop = en_stop.union(add_words)
+import time
+import langid
+nlp = spacy.load("en_core_web_sm")
+import concurrent.futures
 
-parser = English()
-def tokenize(text):
+# parser = English()
+
+
+
+
+
+
+
+def tokenize_idtext(idtext):
+
+    # id_tokens_list = []
+
+    # t0 = time.time()
+    # preprocessing data as in LDA
+    # for idx, (uid, line_meta_tuple) in enumerate(idtext_list):
+    uid, line_meta_tuple = idtext
+    line = line_meta_tuple[0]
+    if not line:
+        return ()
+    result, score = langid.classify(line)
+    if result == 'en':
+        tokens = prepare_text_for_lda(line) # takes long
+            # tokens_strip_unk = [token for token in tokens if token in vocab_list]
+            # id_tokens_list.append( (uid, tokens) )
+        return (uid, tokens)
+    else:
+        return ()
+        # if idx % interpret_interval == 0:
+        #     t_taken = time.time() - t0
+        #     print(f'[tokenize documents] {idx} / {num_doc} processed in time {t_taken}')
+        #     t0 = time.time()
+
+
+    # return id_tokens_list
+
+
+
+
+
+
+
+def tokenize_spacy_fewer_pipeline(text):
+    doc = nlp(text,  disable=["tagger", "parser"])
     lda_tokens = []
-    tokens = parser(text)
-    for token in tokens:
-        if token.orth_.isspace():
-            continue
-        elif token.like_url:
-            lda_tokens.append('URL')
-        else:
-            lda_tokens.append(token.lower_)
+    ents = [e.text for e in doc.ents]
+    if True:
+        for token in doc:
+            if token.text in ents:
+                continue
+            if token.orth_.isspace():
+                continue
+            elif token.like_url:
+                lda_tokens.append('URL')
+            else:
+                lda_tokens.append(token.lower_)
+    return lda_tokens
+
+
+
+def tokenize(text):
+    doc = nlp(text)
+    lda_tokens = []
+    ents = [e.text for e in doc.ents]
+    if True:
+        for token in doc:
+            if token.text in ents:
+                continue
+            if token.orth_.isspace():
+                continue
+            elif token.like_url:
+                lda_tokens.append('URL')
+            else:
+                lda_tokens.append(token.lower_)
     return lda_tokens
 
 # lemmna via morphy
@@ -49,9 +115,9 @@ def get_lemma(word):
 def get_lemma2(word):
     return WordNetLemmatizer().lemmatize(word)
 
-
+# tokenize_spacy_fewer_pipeline
 def prepare_text_for_lda(text):
-    tokens = tokenize(text)
+    tokens = tokenize_spacy_fewer_pipeline(text)
     tokens = [token for token in tokens if len(token) > 4]
     tokens = [token for token in tokens if token not in en_stop]
     tokens = [get_lemma(token) for token in tokens]
@@ -59,123 +125,30 @@ def prepare_text_for_lda(text):
 
 
 
-def read_from_json_export(splits_info_path, full_export_data_path):
-
-    mode_list = ['train', 'validation', 'test']
-    filenames_list = []
-    for mode in mode_list:
-        with open(os.path.join(splits_info_path, f'{mode}_filenames.txt'), 'r') as f:
-            filenames_list.extend(f.readlines())
-
-    print('\n\n')
-    print(f'Reading from scratch from: {len(filenames_list)} json files')
-
-    challenge_doc_list = []
-    for file_idx, file_name in enumerate(filenames_list):
-
-        # if file_idx == 100:
-        #     break
-
-        if file_idx % 100 == 0:
-            print(f'{file_idx} / {len(filenames_list)} processing ...')
-
-        file_name = file_name.strip('\n')
-        file_name = os.path.join( full_export_data_path, '/'.join(file_name.split('/')[1:]))
-
-        with open(file_name) as jsf:
-            dict = json.load(jsf)
-            scenes = dict['scenes']
-
-            for sce_idx, scene in enumerate(scenes):  # each dict (a story) may contain several scenes
-                entries = scene['entries']
-
-                for entry_idx, entry in enumerate(entries):
-
-                    # the challenge
-                    try:
-                        target_challenge_card = entry['target_challenge_card']
-                        challenge_name_space = target_challenge_card['namespace']
-                        challenge_card_name = target_challenge_card['name']
-                        challenge_card_description = target_challenge_card['description']
-                        challenge_success = target_challenge_card['success_stakes']
-                        challenge_failure = target_challenge_card['failure_stakes']
-                        challenge_item = ' '.join([challenge_card_name + '.', challenge_card_description,
-                                                  challenge_success, challenge_failure])
-                    except Exception as e:
-                        pass
-                    else:
-                        challenge_doc_list.append(challenge_item)
-
-    return challenge_doc_list
-
-
-
-def read_from_json_export_by_story(splits_info_path, full_export_data_path):
-
-    mode_list = ['train', 'validation', 'test']
-    filenames_list = []
-    for mode in mode_list:
-        with open(os.path.join(splits_info_path, f'{mode}_filenames.txt'), 'r') as f:
-            filenames_list.extend(f.readlines())
-
-    print('\n\n')
-    print(f'Reading from scratch from: {len(filenames_list)} json files')
-
-    challenge_doc_list_by_story = []
-    for file_idx, file_name in enumerate(filenames_list):
-
-        # if file_idx == 5:
-        #     break
-
-        if file_idx % 100 == 0:
-            print(f'{file_idx} / {len(filenames_list)} processing ...')
-
-        file_name = file_name.strip('\n')
-        file_name = os.path.join( full_export_data_path, '/'.join(file_name.split('/')[1:]))
-
-        with open(file_name) as jsf:
-
-            challenge_doc_list = ['_BOS_']
-
-            dict = json.load(jsf)
-            scenes = dict['scenes']
-
-            for sce_idx, scene in enumerate(scenes):  # each dict (a story) may contain several scenes
-                entries = scene['entries']
-
-                for entry_idx, entry in enumerate(entries):
-
-                    # the challenge
-                    try:
-                        target_challenge_card = entry['target_challenge_card']
-                        challenge_name_space = target_challenge_card['namespace']
-                        challenge_card_name = target_challenge_card['name']
-                        challenge_card_description = target_challenge_card['description']
-                        challenge_success = target_challenge_card['success_stakes']
-                        challenge_failure = target_challenge_card['failure_stakes']
-                        challenge_item = ' '.join([challenge_name_space + '.', challenge_card_name + '.', challenge_card_description,
-                                                  challenge_success, challenge_failure])
-                    except Exception as e:
-                        pass
-                    else:
-                        # print('here')
-                        challenge_doc_list.append(challenge_item)
-
-            challenge_doc_list.append('_EOS_')
-        challenge_doc_list_by_story.append(challenge_doc_list)
-    return challenge_doc_list_by_story
-
-
-def format_an_entry(entry, game_pid):
+def format_an_entry(entry, dict, world):
     entry_text = entry['description']
-    character = entry['role'] # narrator or character:1570
-    return (entry_text, game_pid + '_' + character)
 
+    result_tuple = (
+        entry_text,
+        {'game_pid': dict['game_pid'],
+         'role': dict['game_pid'] + "_" + entry['role'],
+         'type': 'challenge',
+         'world': world
+         }
 
-def extract_content_from_file(file_name, full_export_data_path, type_text):
-    # file_name = file_name.strip('\n')
+    )
+
+    return result_tuple
+
+def extract_content_from_file(file_name, full_export_data_path, type_text, world):
+    '''
+
+    :param file_name:
+    :param full_export_data_path:
+    :param type_text:
+    :return: text_list is a list of tuples, each tuple consist of 2 things: (content of text, dict of metadata)
+    '''
     file_name = os.path.join(full_export_data_path, file_name)
-
     text_list = []
 
     with open(file_name) as jsf:
@@ -187,15 +160,14 @@ def extract_content_from_file(file_name, full_export_data_path, type_text):
 
             for entry_idx, entry in enumerate(entries):
 
-                if type_text == 'entry_':
-                    result = format_an_entry(entry, dict['game_pid'])
-                    text_list.append(result)
+                if type_text == 'entry' or type_text == 'entry_challenge_pooled':
+                    result_tuple = format_an_entry(entry, dict, world)
+                    text_list.append(result_tuple)
 
-                else:
+                if type_text == 'challenge' or type_text == 'entry_challenge_pooled':
                     # the challenge
                     try:
                         target_challenge_card = entry['target_challenge_card']
-                        challenge_name_space = target_challenge_card['namespace']
                         challenge_card_name = target_challenge_card['name']
                         challenge_card_description = target_challenge_card['description']
                         challenge_success = target_challenge_card['success_stakes']
@@ -205,27 +177,28 @@ def extract_content_from_file(file_name, full_export_data_path, type_text):
                     except Exception as e:
                         pass
                     else:
-                        text_list.append(challenge_item)
 
+                        result_tuple = (
+                            challenge_item,
+                            {'game_pid': dict['game_pid'],
+                             'role': dict['game_pid'] + "_" + entry['role'],
+                             'type': 'challenge',
+                             'world': world
+                             }
+
+                        )
+                        text_list.append( result_tuple )
     return text_list
 
 
-def extract_textlist_from_world_story_dict(text_by_story_world_dict, type_text):
-    all_text_list = []
-    for idx, (world_name, stories) in enumerate(text_by_story_world_dict.items()):
 
-        world_text_list = []
-        for story_fname, text_list in stories.items():
-            if type_text == 'entry_':
-                if len(text_list) > 0:
-                    entry_list = [items[0] for items in text_list]
-                    world_text_list.extend(entry_list)
-            else:
-                world_text_list.extend(text_list)
-        world_text_list = list(set(world_text_list))
-        all_text_list.extend(world_text_list)
-    return list(set(all_text_list))
-
+def read_from_json_export_and_organize_by_world(full_export_data_path, world_storyfile_dict, type_text):
+    result_dict = {}
+    for idx, (world, filenames) in enumerate(world_storyfile_dict.items()):
+        result_dict[world] = {}
+        for f_name in filenames:
+            result_dict[world][f_name] = extract_content_from_file(f_name, full_export_data_path, type_text, world)
+    return result_dict
 
 
 
@@ -235,10 +208,8 @@ def organize_story_by_world(splits_info_path, full_export_data_path):
     for mode in mode_list:
         with open(os.path.join(splits_info_path, f'{mode}_filenames.txt'), 'r') as f:
             filenames_list.extend(f.readlines())
-
     print('\n\n')
     print(f'Reading from scratch from: {len(filenames_list)} json files')
-
 
     world_storyfile_dict = {}
 
@@ -265,32 +236,20 @@ def organize_story_by_world(splits_info_path, full_export_data_path):
     return world_storyfile_dict
 
 
-def read_from_json_export_and_organize_by_world(full_export_data_path, world_storyfile_dict, type_text):
-    result_dict = {}
-    for idx, (world, filenames) in enumerate(world_storyfile_dict.items()):
-        result_dict[world] = {}
-        for f_name in filenames:
-            result_dict[world][f_name] = extract_content_from_file(f_name, full_export_data_path, type_text)
-
-    return result_dict
 
 
-
-def tokenize_doc_list(doc_list):
-    num_doc = len(doc_list)
-    interpret_interval = int(np.ceil(num_doc / 10))
-
-    challenge_text_list = []
-
-    # preprocessing data as in LDA
-    for idx, line in enumerate(doc_list):
-        tokens = prepare_text_for_lda(line) # takes long
-        # tokens_strip_unk = [token for token in tokens if token in vocab_list]
-        challenge_text_list.append(tokens)
-        # if idx % num_doc == 0:
-            # print(f'[tokenize documents] {idx} / {num_doc} processed')
-
-    return challenge_text_list
+def extract_textlist_from_world_story_dict(text_by_story_world_dict):
+    '''
+    :param text_by_story_world_dict:
+    :return: uid_text_list, a list of tuple, each tuple is (idx, text_tuple), text tuple is defined as in
+    '''
+    all_text_list = []
+    for idx, (world_name, stories) in enumerate(text_by_story_world_dict.items()):
+        for story_fname, text_list in stories.items():
+            all_text_list.extend(text_list)
+    # all_text_list = list(set(all_text_list))
+    uid_text_list = [ (idx, text_tuple) for idx, text_tuple in enumerate(all_text_list) ]
+    return uid_text_list
 
 
 def flatten(lis):
@@ -331,9 +290,9 @@ def build_reduced_glove_dict(uniq_vocab, glove_data_path, glove_file_name, store
                 id2word_dict[cnt] = word
                 cnt += 1
 
-            # if idx % 22000 == 0:
-            #     print(f'{idx} out of 22000000 done')
-            #     print(f'{progress_cnt} / 100 done')
+            if idx % 22000 == 0:
+                print(f'{idx} out of 22000000 done')
+                print(f'{progress_cnt} / 100 done')
                 progress_cnt += 1
 
     embedding_matrix_np = np.array(embedding_list)
@@ -369,22 +328,39 @@ def build_reduced_glove_dict(uniq_vocab, glove_data_path, glove_file_name, store
     print(f'Saving embedding matrix of shape {embedding_matrix_np.shape[0]}-by-{embedding_matrix_np.shape[1]}')
 
 
+def _convert_token_2_ids(uid_token_tuple, word2id_dict, vocab_list):
+    if len(uid_token_tuple) < 2:
+        return ()
+    uid,line = uid_token_tuple
+    ids = [word2id_dict[token] for token in line if token in vocab_list] # considering oovs
+    # ids = [[token] for token in line] # considering oovs
+    return (uid, ids)
 
 
-def convert_token_2_ids(word2id_dict, challenge_tokens_list):
-    # print()
-    # print('Converting tokens list to word ID list ...')
-    challenge_id_list = []
 
-    num_doc = len(challenge_tokens_list)
+def convert_token_2_ids(word2id_dict, uid_tokens_list):
+
+    # n = len(uid_tokens_list)
+    # interval = np.ceil(n/50)
+
+    # uid_text_id_list = []
     vocab_list = list(word2id_dict.keys())
-    for idx, line in enumerate(challenge_tokens_list):
-        ids = [word2id_dict[token] for token in line if token in vocab_list] # considering oovs
-        challenge_id_list.append(ids)
-        # if idx % 3000 == 0:
-            # print(f'[convert token to id] {idx} / {num_doc} processed')
 
-    return challenge_id_list
+    from itertools import repeat
+
+    start = time.time()
+    uid_text_ids= []
+    chunk_size = 100
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        results = executor.map(_convert_token_2_ids, uid_tokens_list, repeat(word2id_dict), repeat(vocab_list), chunksize=chunk_size)
+        for result in results:
+            uid_text_ids.append(result)
+
+    end = time.time()
+    print(f'Chunksize = {chunk_size}, The time spent on conversion from text to ids on {len(uid_tokens_list)} examples '
+          f'is {end - start}, ave {(end - start)/len(uid_tokens_list)} per example')
+
+    return uid_text_ids
 
 
 

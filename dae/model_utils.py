@@ -54,11 +54,10 @@ def compute_world_pred_acc(pred_logits, targets_t, do_ignore_index, ignore_index
 
 
 
-def run_epoch(net, optim, batch_intervals_train, input_vector_world_id_list, input_vector_list_neg, args, train):
+def run_epoch(net, optim, batch_intervals_train, uid_input_vector_list, uid_input_vector_list_neg, args, train):
     device = args.device
     triplet_loss_margin = args.triplet_loss_margin
     triplet_loss_weight = args.triplet_loss_weight
-    world_clas_weight = args.world_clas_weight
     ortho_weight = args.ortho_weight
 
     ep_loss = 0.
@@ -74,14 +73,14 @@ def run_epoch(net, optim, batch_intervals_train, input_vector_world_id_list, inp
     for b_idx, (start, end) in enumerate(batch_intervals_train):
         # print(start, end)
 
-        batch_data = input_vector_world_id_list[start:end]
-        batch_input_vec = [vec_id_pair[0] for vec_id_pair in batch_data]
+        batch_data = uid_input_vector_list[start:end]
+        batch_input_vec = [uid_vec_pair[1] for uid_vec_pair in batch_data]
         batch_data_t = torch.FloatTensor(np.array(batch_input_vec)).to(device)
 
-        batch_data_neg = input_vector_list_neg[start:end]
+        batch_data_neg = uid_input_vector_list_neg[start:end]
         batch_data_neg_t = torch.FloatTensor(np.array(batch_data_neg)).to(device)
 
-        recomb, world_logits = net(batch_data_t)
+        recomb = net(batch_data_t)
 
 
         triplet_loss = triplet_loss_weight * compute_triplet_loss(recomb, batch_data_t, batch_data_neg_t, triplet_loss_margin)
@@ -91,14 +90,13 @@ def run_epoch(net, optim, batch_intervals_train, input_vector_world_id_list, inp
         world_targets_t = torch.LongTensor(np.array(world_targets)).to(device)
 
         # compute world loss using the doc here: https://pytorch.org/docs/stable/nn.html#crossentropyloss
-        world_class_loss = world_clas_weight * compute_world_loss(args.ignore_none_world, args.none_id, world_logits, world_targets_t)
 
         # compute orthogonality penalty on dictionary
         X = torch.nn.functional.normalize(net.X, dim=0)
         ortho_loss = ortho_weight * torch.sum((torch.mm(X, X.t()) - \
                                                torch.eye(X.size()[0]).to(device)) ** 2)
 
-        batch_loss = triplet_loss + ortho_loss + world_class_loss
+        batch_loss = triplet_loss + ortho_loss
 
         if train: # at training time we perform gradient updates
             batch_loss.backward()
@@ -106,24 +104,20 @@ def run_epoch(net, optim, batch_intervals_train, input_vector_world_id_list, inp
             optim.zero_grad()
 
         # else: # at validation time we compute prediction accuracies
-        pred_acc = compute_world_pred_acc(world_logits, world_targets_t, args.ignore_none_world, args.none_id)
-
 
 
         ep_loss += batch_loss.item()
         ep_tri_loss += triplet_loss.item()
         ep_or_loss += ortho_loss.item()
-        ep_world_class_loss += world_class_loss.item()
 
     ep_loss = ep_loss / len(batch_intervals_train)
     ep_tri_loss = ep_tri_loss / len(batch_intervals_train)
     ep_or_loss = ep_or_loss / len(batch_intervals_train)
-    ep_world_class_loss = ep_world_class_loss / len(batch_intervals_train)
 
     signature = 'TRAIN' if train == True else 'VALID'
 
-    ep_info = '[%s] loss: %0.4f, %0.4f, %0.2f, %0.4f (all, tri, wo, or), accuracy:%0.5f, time: %0.2f s' % (signature,
-        ep_loss, ep_tri_loss, ep_world_class_loss, ep_or_loss, pred_acc, time.time() - start_time)
+    ep_info = '[%s] loss: %0.4f, %0.4f, %0.4f (all, tri, or), time: %0.2f s' % (signature,
+        ep_loss, ep_tri_loss, ep_or_loss, time.time() - start_time)
 
     print(ep_info)
 

@@ -99,22 +99,11 @@ class DictionaryAutoencoder(nn.Module):
             # latent = torch.mean(proj, dim=1)
 
             bsz, d_emb = batch.size()
-
-            embs = self.dropout(batch)
-            proj = self.dropout(self.act(self.W_proj(embs)))
-            latent = proj
-
-
-
-        if self.mode == 'spanbert':
-            bsz, d_emb = batch.size()
-
             embs = self.dropout(batch)
             proj = self.dropout(self.act(self.W_proj(embs)))
             latent = proj
 
         # project back to embedding size
-
         dict_query = self.dropout(self.act(self.W_att(latent)))
         return dict_query
 
@@ -155,7 +144,6 @@ class DictionaryAutoencoder(nn.Module):
         :return: the score, probability distribution, over all K topics
         '''
         with torch.no_grad():
-
             bsz, d_emb = batch.size()
 
             # project back to embedding size
@@ -169,15 +157,14 @@ class DictionaryAutoencoder(nn.Module):
             return torch.nn.functional.softmax(scores, dim=1)  # bsz x K
 
 
-    def rank_vocab_for_topics(self, word_embedding_matrix):
+    def rank_vocab_for_topics(self, word_embedding_matrix, to_be_removed):
         # if self.mode == 'glove':
         #     id2word_dict = self.vrev
         #     vocab_input = [[i] for i in range(len(id2word_dict))]
         #     vocab_input_t = torch.LongTensor(vocab_input).to(self.device)
         # if self.mode == 'bert':
-        if True:
-            vocab_input = word_embedding_matrix
-            vocab_input_t = torch.FloatTensor(vocab_input).to(self.device)
+        vocab_input = word_embedding_matrix
+        vocab_input_t = torch.FloatTensor(vocab_input).to(self.device)
         with torch.no_grad():
             # #in numpy
             # dict_queries = model.get_query(vocab_input_t).cpu().detach().numpy()
@@ -190,6 +177,11 @@ class DictionaryAutoencoder(nn.Module):
             scores_over_vocab = torch.mm(topic_dict, dict_queries.t())  # K by num_vocab
             prob_over_vocab = torch.nn.functional.softmax(scores_over_vocab, dim=1)  # K by num_vocab
             prob_over_vocab_np = prob_over_vocab.cpu().detach().numpy()
+
+            if len(to_be_removed) > 0:
+                prob_over_vocab_np[:, to_be_removed] = 0.
+                # print('removed some words')
+
 
             top_probable = np.argsort(prob_over_vocab_np)
             top_10 = top_probable[:, -10:]

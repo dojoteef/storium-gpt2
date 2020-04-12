@@ -135,7 +135,7 @@ else:
     print('Loaded pre-trained embedding with shape: ')
     print(embedding_matrix_np.shape)
 
-uid_tokens_list = uid_tokens_list[:1000]
+# uid_tokens_list = uid_tokens_list[:1000]
 # Step 6 create text ids from text tokens
 text_ids_fname = os.path.join(args.final_data_path, 'uid_text_ids.npy')
 if os.path.exists( text_ids_fname ):
@@ -146,6 +146,78 @@ else:
     print(f'Length of the text_ids list = {len(uid_text_ids)}')
     pickle.dump(uid_text_ids,  open( text_ids_fname, 'wb') )
     print(f'Save word ids converted from tokens with number of data points = {len(uid_text_ids)}')
+
+
+
+# step 7 rank tokens based on frequency
+if os.path.exists( os.path.join( args.final_data_path, 'freq_result.pkl') ):
+    with open(os.path.join(args.final_data_path, 'freq_result.pkl'), 'rb') as f:
+        freq_result = pickle.load(f)
+else:
+    text_ids = [item[1] for item in uid_text_ids if len(item) == 2]
+    text_ids_1d = list(flatten(text_ids))
+    freq_result = Counter(text_ids_1d)
+    with open( os.path.join( args.final_data_path, 'freq_result.pkl'), 'wb') as f:
+        pickle.dump(freq_result, f)
+
+
+# Step 8 rank tokens based on story occurences
+'''
+story_tokens_dict = {} (default set?)
+for item in uid_text_id:
+    get the uid, 
+    get the story_fname
+    text_ids = uid_text_ids[uid] #
+    story_tokens[story_fname].add(text_ids) # add into a set
+    
+for story in story_tokens:
+    get uniq_tokens in story
+    token_occ_by_story[uniq_tokens] += 1 # https://docs.scipy.org/doc/numpy/user/basics.indexing.html#assigning-values-to-indexed-arrays
+'''
+if os.path.exists( os.path.join( args.final_data_path, 'token_story_occurence.pkl') ):
+    with open(os.path.join(args.final_data_path, 'token_story_occurence.pkl'), 'rb') as f:
+        token_story_occurence = pickle.load(f)
+else:
+
+    uid_text_meta_dict = dict(uid_text_list)
+    from collections import defaultdict
+    story_tokens_dict = defaultdict(set)
+
+    for item in uid_text_ids:
+        if len(item) ==2:
+            uid, text_ids = item[0], item[1]
+            curr_game_pid = uid_text_meta_dict[uid][1]['game_pid']
+            for id in text_ids:
+                story_tokens_dict[curr_game_pid].add(id)
+
+    token_story_occurence = np.zeros( (len(id2word_dict, )) )
+    for k, v in story_tokens_dict.items():
+        v = list(v)
+        token_story_occurence[v] += 1
+    pickle.dump( token_story_occurence,  open(os.path.join(args.final_data_path, 'token_story_occurence.pkl'), 'wb'))
+
+
+# Step 9 :
+# random.shuffle(uid_text_ids)
+freq_most_common = freq_result.most_common()
+freq_reverse = list(reversed(freq_most_common))
+to_be_removed = []
+for (wordid, count) in freq_reverse:
+    if count < args.freq_threshold:
+        to_be_removed.append(wordid)
+low_freq_cnt = len(to_be_removed)
+print(f'In terms of frequency, {low_freq_cnt} words are removed with threshold at {args.freq_threshold}')
+
+
+for (wordid, cnt) in enumerate(token_story_occurence):
+    if wordid not in to_be_removed and cnt <= args.occurrence_threshold:
+        to_be_removed.append(wordid)
+print(f'In terms of occurrences in stories, {len(to_be_removed) - low_freq_cnt} words are removed with threshold at {args.occurrence_threshold}')
+with open( os.path.join(args.final_data_path, 'to_be_removed.pkl'), 'wb' ) as f:
+    pickle.dump( to_be_removed,  f)
+
+
+to_be_removed = list( set( to_be_removed ) )
 
 
 

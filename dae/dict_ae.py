@@ -180,17 +180,6 @@ print(f'In terms of occurrences in stories, {len(to_be_removed) - low_freq_cnt} 
 
 
 
-to_be_removed = list( set( to_be_removed ) )
-print(f'During interpreting (of the topics), we  will remove {len(to_be_removed)} words')
-
-binary_list = ['00101110', '01110011', '01110100']
-for bin_str in binary_list:
-    bin_id = word2id_dict[bin_str]
-    if bin_id in to_be_removed:
-        num_occurrences = token_story_occurence[ word2id_dict[bin_str] ]
-        print(f'The binary str {bin_str} was removed as it occurred {num_occurrences} times')
-
-
 # building the positive and negative data, shuffled
 # uid_text_ids = uid_text_ids[:100]
 random.shuffle(uid_text_ids)

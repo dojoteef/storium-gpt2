@@ -132,7 +132,7 @@ def format_an_entry(entry, dict, world):
         entry_text,
         {'game_pid': dict['game_pid'],
          'role': dict['game_pid'] + "_" + entry['role'],
-         'type': 'challenge',
+         'type': 'entry',
          'world': world
          }
 
@@ -365,24 +365,8 @@ def convert_token_2_ids(word2id_dict, uid_tokens_list):
 
 
 
-def text_to_topic(challenge_doc_list, word2id_dict, embedding_matrix_np, model, device, batch_size):
-    # Step 2 tokenize, stem and lemmatize the docs (and also get the uniq vocab along the way)
-    challenge_tokens_list = tokenize_doc_list(challenge_doc_list)
-    # Step 4 word tokens to word IDs
-    text_ids = convert_token_2_ids(word2id_dict, challenge_tokens_list)
+def text_to_topic(input_vector_list, model, device, batch_size=400):
 
-    input_vector_list = []
-    for i in range(len(text_ids)):  # loop over all challenges
-
-        try:
-            sent = text_ids[i]
-            if len(sent) > 0:
-                vectors = [embedding_matrix_np[word_id, :] for word_id in sent]
-                vector_mean = np.mean(vectors, axis=0)
-            input_vector_list.append(vector_mean)
-        except UnboundLocalError as e:
-            print('error caught here')
-            print(sent)
 
     batch_intervals = [(start, start + batch_size) for start in range(0, len(input_vector_list), batch_size)]
 

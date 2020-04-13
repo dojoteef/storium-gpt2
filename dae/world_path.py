@@ -23,8 +23,8 @@ import numpy as np
 import os
 import pickle
 import data_analysis_utils
-from data_analysis_utils import (prepare_text_for_lda, read_from_json_export, tokenize_doc_list, build_reduced_glove_dict,
-convert_token_2_ids, read_from_json_export_by_story, text_to_topic, compute_topic_transition_matrix, filtere_off_unk_topics)
+from data_analysis_utils import (prepare_text_for_lda, build_reduced_glove_dict, convert_token_2_ids, text_to_topic,
+                                 compute_topic_transition_matrix, filtere_off_unk_topics)
 from collections import Counter
 import dae_model
 from dae_model import DictionaryAutoencoder
@@ -32,16 +32,18 @@ import time
 import argparse
 
 parser = argparse.ArgumentParser()
-
-parser.add_argument('--stored_data_path', type=str, default='./final_filter')
-parser.add_argument('--model_name', type=str, default='model.pt')
 parser.add_argument('--random_seed', type=int, default=42)
-parser.add_argument('--topic_path', type=str, default='./final_filter')
-parser.add_argument('--device', type=int, default=0)
+parser.add_argument('--data_path', type=str, default='./final_pooled_backup')
+parser.add_argument('--model_name', type=str, default='no_filter_train_30_10.pt')
+parser.add_argument('--topic_path', type=str, default='./final_pooled_backup')
+parser.add_argument('--device_id', type=int, default=0)
 parser.add_argument('--config', type=str, default='entry_by_character')
+parser.add_argument('--freq_threshold', type=int, default=30)
+parser.add_argument('--occurrence_threshold', type=int, default=10)
+
 args = parser.parse_args()
 
-device = f'cuda:{str(args.device)}'
+device = f'cuda:{str(args.device_id)}'
 config = args.config
 
 
@@ -50,110 +52,157 @@ random.seed(args.random_seed)
 np.random.seed(args.random_seed)
 torch.manual_seed(args.random_seed)
 
-with open( os.path.join('./entry_data', 'text_by_story_world_dict.pkl'), 'rb') as f:
+
+# load original data info
+with open( os.path.join(args.data_path, 'text_by_story_world_dict.pkl'), 'rb') as f:
     text_by_story_world_dict = pickle.load(f)
-
-
-if args.config == 'challenge_by_story':
-    with open('./stored_data/text_by_story_world_dict.pkl', 'rb') as f:
-        text_by_story_world_dict = pickle.load(f)
-
 world_counter = Counter()
-print(f'There are {len(text_by_story_world_dict)} worlds in total')
 for world, stories in text_by_story_world_dict.items():
     world_counter.update({world: len(stories)})
+print(f'There are {len(text_by_story_world_dict)} worlds in total')
+
+# load uid information
+uid_text_list_fname = os.path.join( args.data_path, 'uid_text_list.pkl')
+if os.path.exists(( uid_text_list_fname) ):
+    uid_text_list = pickle.load( open(uid_text_list_fname, 'rb') )
+uid_info_tuple_list = [ (tuple_item[1][0], tuple_item[0]) for tuple_item in uid_text_list ]
+info_uid_tuple_dict = dict(uid_info_tuple_list)
+
+uid_by_story_world_dict_path = os.path.join(args.data_path, 'uid_by_story_world_dict.pkl')
+if os.path.exists( uid_by_story_world_dict_path):
+    uid_by_story_world_dict = pickle.load( open( uid_by_story_world_dict_path, 'rb'))
+else:
+    # establish the link between text_by_story_world_dict and uid
+    uid_by_story_world_dict = text_by_story_world_dict
+    for world, stories in uid_by_story_world_dict.items():
+        world_counter.update({world: len(stories)})
+
+        for story_name, info_meta_tupe_list in stories.items():
+            for idx, info_meta_tupe in enumerate(info_meta_tupe_list):
+                info = info_meta_tupe[0]
+                # if info in info_uid_tuple_dict.keys():
+                uid = info_uid_tuple_dict[info]
+                info_meta_tupe_list[idx] = (info, info_meta_tupe[1], uid)
+    pickle.dump(uid_by_story_world_dict, open( uid_by_story_world_dict_path, 'wb' ))
 
 
 
-with open(os.path.join(args.stored_data_path, args.model_name), 'rb') as f:
-    model = torch.load(f, map_location=device)  # put the model on specified device
 
-model.to(device)  # simply load without parallelism
+text_ids_fname = os.path.join(args.data_path, 'uid_text_ids.npy')
+if os.path.exists( text_ids_fname ):
+    uid_text_ids = pickle.load( open( text_ids_fname, 'rb') )
+    print(f'Load previously converted token ids with number of data instances = {len(uid_text_ids)}')
+
+
+
+with open(os.path.join(args.data_path, args.model_name), 'rb') as f:
+    model = torch.load(f)
 model.device = device
+model.to(device)
 model.eval()
 
 
 
-embedding_matrix_np = np.load(os.path.join(args.stored_data_path, 'embedding_matrix.npy'))
-with open(os.path.join(args.stored_data_path, 'word2id_dict.pkl'), 'rb') as f:
+embedding_matrix_np = np.load(os.path.join(args.data_path, 'embedding_matrix.npy'))
+with open(os.path.join(args.data_path, 'word2id_dict.pkl'), 'rb') as f:
     word2id_dict = pickle.load(f)
+with open(os.path.join(args.data_path, 'id2word_dict.pkl'), 'rb') as f:
+    id2word_dict = pickle.load(f)
 
-#
-# print('Topics with nearest neighbour decoding: ')
-# model.interpret_dictionary()
-# print('=' * 70)
-# print('Topics with probability argmax: ')
-# model.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np)
-#
+uid_topic_list_path = os.path.join(args.data_path, 'uid_topic_list')
+if not os.path.exists( uid_topic_list_path ):
+    uid_input_vector_list = []
+    for i in range( len( uid_text_ids) ): # loop over each challenge
+        uid_text_tuple = uid_text_ids[i]
+        if len(uid_text_tuple) ==2:
+            uid, sent = uid_text_tuple
+            vectors = [ embedding_matrix_np[word_id, :] for word_id in sent]
 
-with open( os.path.join( './final_filter', 'freq_result.pkl'), 'rb') as f:
-    freq_result = pickle.load(f)
+            if len(vectors) > 0:
+                vector_mean = np.mean( vectors, axis=0)
+                uid_input_vector_list.append( (uid,vector_mean) )
 
+    uid_list, vector_list = zip( *uid_input_vector_list )
 
-freq_most_common = freq_result.most_common()
-freq_reverse = list(reversed(freq_most_common))
+    t0 = time.time()
+    topic_pred_list = text_to_topic(vector_list, model, device, batch_size=400)
+    uid_topic_list = zip(uid_list, topic_pred_list)
+    t1 = time.time()
+    print(f'Time taken to assign topics to all text is {t1 - t0}')
 
-to_be_removed = []
-for (wordid, count) in freq_reverse:
-    if count < 30:
-        to_be_removed.append(wordid)
+    with open( os.path.join(args.data_path, 'uid_topic_list'), 'wb' ) as f:
+        pickle.dump(uid_topic_list, f)
 
-
-
-model.rank_vocab_for_topics(word_embedding_matrix=embedding_matrix_np, to_be_removed=to_be_removed)
-
-
+else:
+    uid_topic_list = pickle.load( open(uid_topic_list_path, 'rb'))
+uid_topic_dict = dict(uid_topic_list)
 
 
 num_topics = 50
 
-
+t0 = time.time()
+identifier = 'game_pid' # or 'game_pid'
+type_text= 'challenge'
 topic_transition_matrix_by_world_dict = {}
 
-t0 = time.time()
+num_all, num_key_not_found, num_not_entry, num_counted = 0, 0, 0, 0
 
-# for idx, world_tuple in enumerate(world_counter.most_common()):
-#     if idx == 0: # ignore the None world
-#         continue
-#     world_name = world_tuple[0]
-#     stories = text_by_story_world_dict[world_name]
-#     world_topics_transition_matrix = np.zeros((num_topics, num_topics))
-#     for story_fname, text_list in stories.items(): # each story contains a list of text
-#         if config == 'entry_by_character':
-#             roles_in_story = [ role for sent, role in text_list if sent is not None]
-#             for role_cur in roles_in_story:
-#                 text_list_of_role = [sent for sent, role in text_list if role == role_cur and sent is not None]
-#                 if len(text_list_of_role) > 0: # a list of text gets mapped to a list of topic ids
-#                     story_topic_pred_list = text_to_topic(text_list_of_role, word2id_dict, embedding_matrix_np, model, device, 200)
-#                     world_topics_transition_matrix += compute_topic_transition_matrix(story_topic_pred_list, num_topics)
-#         if config == 'entry_by_story':
-#             text_list = [ sent for sent, role in text_list if sent is not None]
-#             if len(text_list) > 0: # a list of text gets mapped to a list of topic ids
-#                 story_topic_pred_list = text_to_topic(text_list, word2id_dict, embedding_matrix_np, model, device, 200)
-#                 world_topics_transition_matrix += compute_topic_transition_matrix(story_topic_pred_list, num_topics)
-#         if config == 'challenge_by_story':
-#             text_list = [ sent for sent, role in text_list if sent is not None]
-#             if len(text_list) > 0: # a list of text gets mapped to a list of topic ids
-#                 story_topic_pred_list = text_to_topic(text_list, word2id_dict, embedding_matrix_np, model, device, 200)
-#                 world_topics_transition_matrix += compute_topic_transition_matrix(story_topic_pred_list, num_topics)
-#     topic_transition_matrix_by_world_dict[world_name] = world_topics_transition_matrix
-#
-#     if idx >=7:
-#         break
-#
-#     print(f'Done with {idx+1} / 7 worlds')
-# with open(os.path.join( args.stored_data_path, f'topic_transition_matrix_by_world_dict_{config}.pkl'), 'wb') as f:
-#     pickle.dump(topic_transition_matrix_by_world_dict, f)
+for idx, world_tuple in enumerate(world_counter.most_common()):
+    if idx == 0: # ignore the None world
+        continue
+    world_name = world_tuple[0]
+    stories = uid_by_story_world_dict[world_name]
+    world_topics_transition_matrix = np.zeros((num_topics, num_topics))
+
+    identifier_topic_list_dict = {}
+
+    for story_fname, inf_meta_uid_triples_list in stories.items(): # each story contains a list of text
+        topic_list_per_identifier_dict = {}
+        for inf_meta_uid_triple in inf_meta_uid_triples_list:
+            _, meta, uid = inf_meta_uid_triple
+            id_key = meta[identifier]
+
+            num_all += 1
+            if uid not in uid_topic_dict.keys():
+                # print('The uid is not in the uid_topic_dict keys')
+                num_key_not_found+=1
+
+            if meta['type'] != type_text:
+                # print('The type of text is not entry')
+                num_not_entry += 1
+
+            if uid in uid_topic_dict.keys() and meta['type'] == type_text:
+                num_counted += 1
+                if id_key in identifier_topic_list_dict.keys():
+                    identifier_topic_list_dict[id_key].append( uid_topic_dict[uid] )
+                else:
+                    identifier_topic_list_dict[id_key] = [ uid_topic_dict[uid] ]
+
+    for id_key, topic_list in identifier_topic_list_dict.items():
+        world_topics_transition_matrix += compute_topic_transition_matrix(topic_list, num_topics)
+
+    topic_transition_matrix_by_world_dict[world_name] = world_topics_transition_matrix
+
+    if idx >=7:
+        break
+    print(f'Done with {idx+1} / 7 worlds')
+
+print(f'Number over all: {num_all}')
+print(f'Number key not found: {num_key_not_found}')
+print(f'Number type text not entry: {num_not_entry}')
+print(f'Number counted: {num_counted}')
 
 
-with open(os.path.join( args.stored_data_path, f'topic_transition_matrix_by_world_dict_{config}.pkl'), 'rb') as f:
+with open(os.path.join( args.data_path, f'topic_transition_matrix_by_world_dict_{identifier}.pkl'), 'wb') as f:
+    pickle.dump(topic_transition_matrix_by_world_dict, f)
+
+
+with open(os.path.join( args.data_path, f'topic_transition_matrix_by_world_dict_{identifier}.pkl'), 'rb') as f:
     topic_transition_matrix_by_world_dict = pickle.load(f)
-
 
 t1 = time.time()
 
-print(f'Total time taken for text to topic is:')
-print(t1 - t0)
+print(f'Total time taken to compute topic transition matrix by worlds is {t1 - t0}')
 print('\n\n')
 # for world_name, topic_transition_matrix in topic_transition_matrix_by_world_dict.items():
 #
@@ -174,7 +223,7 @@ print('\n\n')
 #     plt.savefig( os.path.join(f'./vis/entry/{ "_".join(world_name.split())}'))
 
 
-with open( os.path.join(args.topic_path, 'topics_filter.txt'), 'r') as f:
+with open( os.path.join(args.topic_path, 'topics.txt'), 'r') as f:
     lines = f.readlines()
 
 topics_summarized = []
@@ -185,7 +234,7 @@ for idx, line in enumerate( lines ):
     if line_split[:3] == 'unk':
         idx_filter_off.append(idx)
 
-
+#
 for starting in range(num_topics):
     print('\n\n')
     print( '=' * 100)

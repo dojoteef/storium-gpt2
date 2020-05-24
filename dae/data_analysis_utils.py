@@ -366,8 +366,6 @@ def convert_token_2_ids(word2id_dict, uid_tokens_list):
 
 
 def text_to_topic(input_vector_list, model, device, batch_size=400):
-
-
     batch_intervals = [(start, start + batch_size) for start in range(0, len(input_vector_list), batch_size)]
 
     result = np.empty((0), dtype=int)
@@ -441,3 +439,29 @@ def combine_two_text_by_story_world_dict(text_by_story_world_dict_1, text_by_sto
             world_dict[story_fname] = pooled_list
         new_dict[world] = world_dict
     return new_dict
+
+def generate_latex_table(content, Sci_Notn, row_names, col_names, row_header, caption):
+    # print('\n\nPlease copy the following to latex: \n\n')
+    from decimal import Decimal
+    print("\\begin{table}")
+    print('\\centering')
+    print("\\resizebox{\columnwidth}{!}{")
+    form = '{' + '' + ''.join(['l']* (len(col_names) + 1) ) + '}'
+    print(f"\\begin{{tabular}} {  form  }\\hline")
+    # print(f'\\textbf{ {str(row_header)} }' + ' & ' + ' & '.join( [ f'\\textbf{ {str(col_name)} }'    for col_name in col_names]) + ' \\\\ ' + ' \\hline')
+    print(row_header + ' & ' + ' & '.join( col_names) + ' \\\\ ' + ' \\hline')
+
+    for row_idx, row_list in enumerate(content):
+        row_content = str(row_names[row_idx])
+        for col_idx, item in enumerate(row_list):
+            if Sci_Notn:
+                row_content += ' & ' + "{:.3e}".format(Decimal(str(item)))
+            else:
+                row_content += ' & ' + str(item)
+        row_content +=  ' \\\\ ' + '\hline'
+        print(row_content)
+    print('\\end{tabular}')
+    print("}")
+    print('\\caption{' + caption + '}')
+    print('\\end{table}')
+    # print('\n\n End of latex code \n\n')

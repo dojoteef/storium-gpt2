@@ -7,13 +7,32 @@ from difflib import Differ, SequenceMatcher
 
 import aiofiles
 from rouge import Rouge
+import nltk
 from nltk import download, word_tokenize
 from nltk.metrics.agreement import AnnotationTask
-import nltk
 nltk.download('punkt')
 
+diff_code_mapping ={
+    'table-warning': 'user-kept',
+    'table-danger': 'user-removed',
+    'table-success': 'user-added',
+    'table-default': 'user-kept-stop'
+}
+
+
+
+
+
+
 differ = Differ()
-stopwords: Set[str] = set()
+stop_words: Set[str] = set()
+from nltk.corpus import stopwords
+stop_words.update(stopwords.words('english'))
+with open(os.path.join("./ling_analysis/", "stopwords.txt"), "rt") as stopword_file:
+    stop_words.update(l.strip() for l in stopword_file.readlines())
+
+
+
 rouge = Rouge(
     metrics=["rouge-n", "rouge-l", "rouge-w"],
     max_n=4,
@@ -26,24 +45,39 @@ rouge = Rouge(
 )
 
 
-async def initialize_metrics():
-    """ Initialize the metrics module """
-    # Ensure nltk has "punkt" downloaded... it's apparently needed for py-rouge
-    download("punkt")
-    await load_stopwords()
+# async def initialize_metrics():
+#     """ Initialize the metrics module """
+#     # Ensure nltk has "punkt" downloaded... it's apparently needed for py-rouge
+#     download("punkt")
+#     await load_stopwords()
+#
+#
+# async def load_stopwords():
+#     """ Load the stopword list """
+#     async with aiofiles.open(
+#         os.path.join("static", "stopwords.txt"), "rt"
+#     ) as stopword_file:
+#         stopwords.update(l.strip() for l in await stopword_file.readlines())
+#
+
+# def remove_stopwords(text: str) -> List[str]:
+#     """ Remove stop words from the given text """
+#     return [token for token in word_tokenize(text) if token.lower() not in stopwords]
+#
 
 
-async def load_stopwords():
-    """ Load the stopword list """
-    async with aiofiles.open(
-        os.path.join("static", "stopwords.txt"), "rt"
-    ) as stopword_file:
-        stopwords.update(l.strip() for l in await stopword_file.readlines())
+def basic_check_diff(diffs_result_list):
+    for diff_dict in diffs_result_list:
+        assert diff_dict['type'] in [ 'user-kept', 'user-removed', 'user-added', 'user-kept-stop']
+        if diff_dict['type'] == 'user-removed':
+            assert diff_dict['span_reference'] == None
+        elif diff_dict['type'] == 'user-added':
+            assert diff_dict['span_hypothesis'] == None
+        else:
+            assert (diff_dict['span_hypothesis'][1] - diff_dict['span_hypothesis'][0]) \
+                   == (diff_dict['span_reference'][1] - diff_dict['span_reference'][0])
+    print('basic check diff passed')
 
-
-def remove_stopwords(text: str) -> List[str]:
-    """ Remove stop words from the given text """
-    return [token for token in word_tokenize(text) if token.lower() not in stopwords]
 
 
 def get_diff_score(
@@ -74,11 +108,10 @@ def get_diff_score(
     reference_tokens = rouge._preprocess_summary_as_a_whole(reference)[0].split()
     hypothesis_tokens = rouge._preprocess_summary_as_a_whole(hypothesis)[0].split()
 
-    diffs: List[Tuple[str, str]] = []
+    # diffs: List[Tuple[str, str]] = []
     matcher = SequenceMatcher(isjunk=None, a=hypothesis_tokens, b=reference_tokens)
 
-    inspection_id = 0
-
+    diffs_result_list = []
     for tag, alo, ahi, blo, bhi in matcher.get_opcodes():
         if tag == "equal":
             diff_text, hypothesis_index = get_substring(
@@ -89,12 +122,18 @@ def get_diff_score(
             )
             diff_class = "table-default"
             if any(
-                token.lower() not in stopwords for token in hypothesis_tokens[alo:ahi]
+                token.lower() not in stop_words for token in hypothesis_tokens[alo:ahi]
             ):
                 diff_class = "table-warning"
                 score += ahi - alo
 
-            diffs.append((diff_class, diff_text))
+            # user kept original content,
+            diffs_result_list.append({
+                'type': diff_code_mapping[diff_class],
+                'content': hypothesis_tokens[alo:ahi],
+                'span_hypothesis': [alo, ahi],
+                'span_reference': [blo, bhi]
+            })
         else:
             if tag == "delete":
                 diff_text, hypothesis_index = get_substring(
@@ -103,12 +142,24 @@ def get_diff_score(
                     hypothesis_index,
                     hypothesis_tokens[alo:ahi],
                 )
-                diffs.append(("table-danger", diff_text))
+                # user deleted something, none span in reference
+                diffs_result_list.append({
+                    'type': diff_code_mapping['table-danger'],
+                    'content': hypothesis_tokens[alo:ahi],
+                    'span_hypothesis': [alo, ahi],
+                    'span_reference': None
+                })
             elif tag == "insert":
                 diff_text, reference_index = get_substring(
                     reference, reference_lc, reference_index, reference_tokens[blo:bhi]
                 )
-                diffs.append(("table-success", diff_text))
+                # user added something, none span in hypothesis
+                diffs_result_list.append({
+                    'type': diff_code_mapping['table-success'],
+                    'content': reference_tokens[blo:bhi],
+                    'span_hypothesis': None,
+                    'span_reference': [blo, bhi]
+                })
             elif tag == "replace":
                 diff_text, hypothesis_index = get_substring(
                     hypothesis,
@@ -116,22 +167,27 @@ def get_diff_score(
                     hypothesis_index,
                     hypothesis_tokens[alo:ahi],
                 )
-                diffs.append(("table-danger", diff_text))
+                # user deleted something, none span in reference
+                diffs_result_list.append({
+                    'type': diff_code_mapping['table-danger'],
+                    'content': hypothesis_tokens[alo:ahi],
+                    'span_hypothesis': [alo, ahi],
+                    'span_reference': None
+                })
                 diff_text, reference_index = get_substring(
                     reference, reference_lc, reference_index, reference_tokens[blo:bhi]
                 )
-                diffs.append(("table-success", diff_text))
-        print( f'Inspection {inspection_id}')
-        print( diffs[-1])
-        print( hypothesis_index )
-        print( reference_index )
-        inspection_id += 1
-        print('\n\n')
+                # user added something, none span in hypothesis
+                diffs_result_list.append({
+                    'type': diff_code_mapping['table-success'],
+                    'content': reference_tokens[blo:bhi],
+                    'span_hypothesis': None,
+                    'span_reference': [blo, bhi]
+                })
 
-    return (
-        diffs,
-        rouge._compute_p_r_f_score(
-            len(hypothesis_tokens), len(reference_tokens), score
-        ),
-    )
+        # inspection_id += 1
+        # print('\n\n')
+
+    # basic_check_diff(diffs_result_list)
+    return diffs_result_list
     # pylint:enable=protected-access

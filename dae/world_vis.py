@@ -60,6 +60,8 @@ for world, stories in text_by_story_world_dict.items():
 uid_by_story_world_dict_path = os.path.join(args.data_path, 'uid_by_story_world_dict.pkl')
 if os.path.exists( uid_by_story_world_dict_path):
     uid_by_story_world_dict = pickle.load( open( uid_by_story_world_dict_path, 'rb'))
+else:
+    print('Please run the world_path')
 uid_topic_list_path = os.path.join(args.data_path, 'uid_topic_list')
 uid_topic_list = pickle.load( open(uid_topic_list_path, 'rb'))
 uid_topic_dict = dict(uid_topic_list)
@@ -170,29 +172,9 @@ def get_relative_important_topics(given_freq, overall_freq, topics_summarized, n
 
 
 
-
-
-
 cutoff = 20
 n_words = 6
 threshold = 1
-freq_list, content = get_top_topics(overall_freq, topics_summarized, n_words, cutoff, threshold)
-# plot all tables of topics
-# for idx, world_tuple in enumerate(world_counter.most_common()):
-#     if idx == 0: # ignore the None world
-#         continue
-#     world_name = world_tuple[0]
-#     # print(world_name)
-#     # get_top_topics(world_topic_freq_list_dict[world_name], topics_summarized, 20)
-#     freq_list, content = get_top_topics(world_topic_freq_list_dict[world_name], topics_summarized, n_words, cutoff, threshold)
-#     generate_latex_table(content=content, Sci_Notn=False, row_names = freq_list, col_names = ['topic words'], row_header='freq(\%)', caption=world_name)
-#     print()
-#     if idx == 50:
-#         break
-#
-#     print("\\\\")
-
-
 # plot all tables of relative importance
 world_row_names = []
 topic_row_list = []

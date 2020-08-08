@@ -92,6 +92,8 @@ text_ids_fname = os.path.join(args.data_path, 'uid_text_ids.npy')
 if os.path.exists( text_ids_fname ):
     uid_text_ids = pickle.load( open( text_ids_fname, 'rb') )
     print(f'Load previously converted token ids with number of data instances = {len(uid_text_ids)}')
+else:
+    print('[ERROR] uid_text_ids is missing! Please run the preprocess.py file first')
 
 
 
@@ -210,23 +212,6 @@ t1 = time.time()
 
 print(f'Total time taken to compute topic transition matrix by worlds is {t1 - t0}')
 print('\n\n')
-# for world_name, topic_transition_matrix in topic_transition_matrix_by_world_dict.items():
-#
-#     fig, ax = plt.subplots()
-#     im = ax.imshow(topic_transition_matrix)
-#
-#     # We want to show all ticks...
-#     ax.set_xticks(np.arange(num_topics))
-#     ax.set_yticks(np.arange(num_topics))
-#
-#     # # Rotate the tick labels and set their alignment.
-#     plt.setp(ax.get_xticklabels(), rotation=90, ha="right", size=9,
-#              rotation_mode="anchor")
-#
-#
-#     ax.set_title(f"Inter-topic transition in {world_name}")
-#     fig.tight_layout()
-#     plt.savefig( os.path.join(f'./vis/entry/{ "_".join(world_name.split())}'))
 
 
 with open( os.path.join(args.topic_path, 'topics.txt'), 'r') as f:
@@ -240,48 +225,6 @@ for idx, line in enumerate( lines ):
     if line_split[:3] == 'unk':
         idx_filter_off.append(idx)
 
-#
-# for starting in range(num_topics):
-#     print('\n\n')
-#     print( '=' * 100)
-#
-#     starting_topic = topics_summarized[starting]
-#     if starting_topic[:3]== 'unk':
-#         continue
-#     print(f'Starting from topic {starting} {topics_summarized[starting]}: ')
-#     for idx, (world_name, _) in enumerate(world_counter.most_common()):
-#         if idx == 0:
-#             continue
-#         topic_transition_matrix = topic_transition_matrix_by_world_dict[world_name]
-#         topic_transition_matrix = filtere_off_unk_topics(topic_transition_matrix, idx_filter_off)
-#
-#
-#         # traverse through topic transition matrix
-#         track = []
-#
-#         next = starting
-#         track.append(next)
-#         while len(track) < 4:
-#             all_candidates = topic_transition_matrix[next]
-#             desc_order = np.argsort(all_candidates)
-#             if next == desc_order[-1]:
-#                 next = desc_order[-2]
-#             else:
-#                 next = desc_order[-1] # -2 because the highest probability other than the diagonal
-#             track.append(next)
-#
-#         track_str = []
-#         for i in track:
-#             track_str.append(topics_summarized[i])
-#         # print(f'In the world {world_name}, starting from {topics_summarized[starting]}:')
-#         print(f'[{world_name}]: ' + ' --> '.join(track_str))
-#         print()
-#
-#         if idx >= 7:
-#             break
-#     print('\n\n')
-
-#
 for starting in range(num_topics):
     print('\n\n')
     print( '=' * 100)

@@ -95,12 +95,6 @@ if os.path.exists( text_ids_fname ):
 
 
 
-with open(os.path.join(args.data_path, args.model_name), 'rb') as f:
-    model = torch.load(f)
-model.device = device
-model.to(device)
-model.eval()
-
 
 
 embedding_matrix_np = np.load(os.path.join(args.data_path, 'embedding_matrix.npy'))
@@ -108,6 +102,16 @@ with open(os.path.join(args.data_path, 'word2id_dict.pkl'), 'rb') as f:
     word2id_dict = pickle.load(f)
 with open(os.path.join(args.data_path, 'id2word_dict.pkl'), 'rb') as f:
     id2word_dict = pickle.load(f)
+
+
+
+with open(os.path.join(args.data_path, args.model_name), 'rb') as f:
+    model = torch.load(f)
+model.device = device
+model.to(device)
+model.eval()
+
+
 
 uid_topic_list_path = os.path.join(args.data_path, 'uid_topic_list')
 if not os.path.exists( uid_topic_list_path ):
@@ -141,8 +145,8 @@ uid_topic_dict = dict(uid_topic_list)
 num_topics = 50
 
 t0 = time.time()
-identifier = 'game_pid' # or 'game_pid'
-type_text= 'challenge'
+identifier = 'role' # or 'game_pid'
+type_text= 'entry'
 topic_transition_matrix_by_world_dict = {}
 
 num_all, num_key_not_found, num_not_entry, num_counted = 0, 0, 0, 0
@@ -172,6 +176,8 @@ for idx, world_tuple in enumerate(world_counter.most_common()):
                 num_not_entry += 1
 
             if uid in uid_topic_dict.keys() and meta['type'] == type_text:
+                if uid_topic_dict[uid] == 25: # hardcoded for the "stop word topic"
+                    continue
                 num_counted += 1
                 if id_key in identifier_topic_list_dict.keys():
                     identifier_topic_list_dict[id_key].append( uid_topic_dict[uid] )
@@ -183,9 +189,9 @@ for idx, world_tuple in enumerate(world_counter.most_common()):
 
     topic_transition_matrix_by_world_dict[world_name] = world_topics_transition_matrix
 
-    if idx >=7:
-        break
-    print(f'Done with {idx+1} / 7 worlds')
+    # if idx >=7:
+    #     break
+    print(f'Done with {idx+1}  worlds')
 
 print(f'Number over all: {num_all}')
 print(f'Number key not found: {num_key_not_found}')
@@ -235,47 +241,6 @@ for idx, line in enumerate( lines ):
         idx_filter_off.append(idx)
 
 #
-for starting in range(num_topics):
-    print('\n\n')
-    print( '=' * 100)
-
-    starting_topic = topics_summarized[starting]
-    if starting_topic[:3]== 'unk':
-        continue
-    print(f'Starting from topic {starting} {topics_summarized[starting]}: ')
-    for idx, (world_name, _) in enumerate(world_counter.most_common()):
-        if idx == 0:
-            continue
-        topic_transition_matrix = topic_transition_matrix_by_world_dict[world_name]
-        topic_transition_matrix = filtere_off_unk_topics(topic_transition_matrix, idx_filter_off)
-
-
-        # traverse through topic transition matrix
-        track = []
-
-        next = starting
-        track.append(next)
-        while len(track) < 4:
-            all_candidates = topic_transition_matrix[next]
-            desc_order = np.argsort(all_candidates)
-            if next == desc_order[-1]:
-                next = desc_order[-2]
-            else:
-                next = desc_order[-1] # -2 because the highest probability other than the diagonal
-            track.append(next)
-
-        track_str = []
-        for i in track:
-            track_str.append(topics_summarized[i])
-        # print(f'In the world {world_name}, starting from {topics_summarized[starting]}:')
-        print(f'[{world_name}]: ' + ' --> '.join(track_str))
-        print()
-
-        if idx >= 7:
-            break
-    print('\n\n')
-
-#
 # for starting in range(num_topics):
 #     print('\n\n')
 #     print( '=' * 100)
@@ -290,22 +255,63 @@ for starting in range(num_topics):
 #         topic_transition_matrix = topic_transition_matrix_by_world_dict[world_name]
 #         topic_transition_matrix = filtere_off_unk_topics(topic_transition_matrix, idx_filter_off)
 #
-#         all_candidates = topic_transition_matrix[starting]
-#         desc_order = np.argsort(all_candidates)
 #
-#         top_3 = desc_order[-3:]
+#         # traverse through topic transition matrix
+#         track = []
 #
-#         if starting in top_3:
-#             indx_of_starting = np.where( top_3 == starting)[0][0]
-#             top_2 = np.delete(top_3, indx_of_starting)
-#         else:
-#             top_2 = top_3[-2:]
+#         next = starting
+#         track.append(next)
+#         while len(track) < 4:
+#             all_candidates = topic_transition_matrix[next]
+#             desc_order = np.argsort(all_candidates)
+#             if next == desc_order[-1]:
+#                 next = desc_order[-2]
+#             else:
+#                 next = desc_order[-1] # -2 because the highest probability other than the diagonal
+#             track.append(next)
 #
-#         top_2_words = [topics_summarized[i] for i in top_2 ]
-#         top_2_str = ' ' + ' | '.join(top_2_words) + ' '
-#         print(f'[{world_name}]: '+ f' {topics_summarized[starting]} '  + ' --> ' + top_2_str)
+#         track_str = []
+#         for i in track:
+#             track_str.append(topics_summarized[i])
+#         # print(f'In the world {world_name}, starting from {topics_summarized[starting]}:')
+#         print(f'[{world_name}]: ' + ' --> '.join(track_str))
+#         print()
 #
 #         if idx >= 7:
 #             break
+#     print('\n\n')
+
+#
+for starting in range(num_topics):
+    print('\n\n')
+    print( '=' * 100)
+
+    starting_topic = topics_summarized[starting]
+    if starting_topic[:3]== 'unk':
+        continue
+    print(f'Starting from topic {starting} {topics_summarized[starting]}: ')
+    for idx, (world_name, _) in enumerate(world_counter.most_common()):
+        if idx == 0:
+            continue
+        topic_transition_matrix = topic_transition_matrix_by_world_dict[world_name]
+        topic_transition_matrix = filtere_off_unk_topics(topic_transition_matrix, idx_filter_off)
+
+        all_candidates = topic_transition_matrix[starting]
+        desc_order = np.argsort(all_candidates)
+
+        top_3 = desc_order[-3:]
+
+        if starting in top_3:
+            indx_of_starting = np.where( top_3 == starting)[0][0]
+            top_2 = np.delete(top_3, indx_of_starting)
+        else:
+            top_2 = top_3[-2:]
+
+        top_2_words = [topics_summarized[i] for i in top_2 ]
+        top_2_str = ' ' + ' | '.join(top_2_words) + ' '
+        print(f'[{world_name}]: '+ f' {topics_summarized[starting]} '  + ' --> ' + top_2_str)
+
+        if idx >= 7:
+            break
 
 print('Done')

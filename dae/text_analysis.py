@@ -13,7 +13,6 @@ from nltk import ngrams
 nlp = spacy.load('en_core_web_sm')
 data = './judgement_contexts.json'
 
-
 import json
 import collections
 from rouge import Rouge
@@ -76,7 +75,32 @@ def contained_in(entity, predefined_entity_list):
   return False
 
 
+def plot_pos_ratio(args):
+  import csv
+  import matplotlib.pyplot as plt
+
+  with open( os.path.join(args.output_dir, args.input_fname_to_plot), 'r') as f:
+    csv_reader = csv.reader(f, delimiter='\t')
+    pos_names = []
+    ratios = []
+    for idx, row in enumerate( csv_reader ):
+      if idx == 0:
+        continue
+      pos_names.append(row[0])
+      ratios.append(float(row[1]))
+      print(row)
+  x = [item * 2 for item in range( len(pos_names)) ]
+  plt.bar(x, height=ratios)
+  plt.xticks(x, pos_names, fontsize=6)
+  plt.ylabel('Percentage of user kept text over model generated text')
+  plt.title('Percentage of user kept text according to part of speech')
+  save_name = os.path.join( args.output_dir, 'pos_frequency' )
+  plt.savefig( save_name )
+  print(f'Find plot in {save_name}')
+
+
 def main(args):
+  import csv
 
   with open(args.data_path) as f:
     data = json.load(f)
@@ -99,7 +123,16 @@ def main(args):
   num_uniq_gen_entities = 0
   num_uniq_interest_entities = 0
   num_uniq_gen_predefined_entities = 0
+  num_uniq_gen_predefined_entities_hard_match = 0
   num_uniq_interest_predefined_entities = 0
+
+  ent_csvf = open( os.path.join( args.output_dir, f'Entity_extraction_{args.type_interested}.csv'), mode='w')
+  ent_writer = csv.writer(ent_csvf, delimiter='\t')
+  ent_writer.writerow(['Generated entities',
+                                  'Predefined characters',
+                                  'Generated entities that are from the predefined character list',
+                                  'Generated entities that are from the predefined character list by hard match'])
+
 
   for data_idx, item in enumerate(data):
     # copy the existing content, a dict of 4 fields
@@ -134,9 +167,13 @@ def main(args):
 
     gen_ent_str_list = []
     gen_ent_str_predefined_list = []
+    gen_ent_str_predefined_list_hard_match = []
     for ent in ents: # number of uniq entities
       ent_lc = ent.text.lower()
       gen_ent_str_list.append(ent_lc)
+      if ent_lc in predefined_characters:
+        gen_ent_str_predefined_list_hard_match.append(ent_lc)
+
       if contained_in(ent_lc, predefined_characters):
         gen_ent_str_predefined_list.append(ent_lc)
 
@@ -147,6 +184,10 @@ def main(args):
     print('Generated entities that are kept in the predefined character list: ')
     print(' | '.join(gen_ent_str_predefined_list))
     print('\n\n')
+    ent_writer.writerow([' | '.join(gen_ent_str_list),
+                         ' | '.join(predefined_characters),
+                         ' | '.join(gen_ent_str_predefined_list),
+                         ' | '.join(gen_ent_str_predefined_list_hard_match)])
 
     gen_ent_str_int_set = set()
     gen_ent_str_int_prefefined_set = set()
@@ -215,12 +256,13 @@ def main(args):
     num_uniq_gen_entities += len(gen_ent_str_list)
     num_uniq_interest_entities += len(gen_ent_str_int_set)
     num_uniq_gen_predefined_entities += len(gen_ent_str_predefined_list)
+    num_uniq_gen_predefined_entities_hard_match += len(gen_ent_str_predefined_list_hard_match)
     num_uniq_interest_predefined_entities += len(gen_ent_str_int_prefefined_set)
     # print(gen_ent_str_list)
     # print(gen_ent_str_int_set)
     # print()
 
-
+  ent_csvf.close()
 
   print(f'analyzed {data_idx + 1} user judgements')
 
@@ -277,6 +319,8 @@ def main(args):
 
   print(f'Number of entities generated: {num_uniq_gen_entities}')
   print(f'Number of entities generated that are from predefined character list: {num_uniq_gen_predefined_entities}')
+
+  print(f'Number of entities generated that are from predefined character (by hard match) list: {num_uniq_gen_predefined_entities_hard_match}')
   print(f'Number of entities in {args.type_interested}: {num_uniq_interest_entities}')
   print(f'Number of entities in {args.type_interested} that are from predefined character list:{num_uniq_interest_predefined_entities}')
 
@@ -289,8 +333,10 @@ if __name__ == "__main__":
   parser.add_argument('--output_dir', type=str, default='./ling_analysis')
   parser.add_argument('--num_grams', type=int, default=1)
   parser.add_argument('--type_interested', type=str, default='user-kept')
+  parser.add_argument('--input_fname_to_plot', type=str, default='1_grams_pos_user-kept.csv')
   args = parser.parse_args()
-  main(args)
+  # main(args)
+  plot_pos_ratio(args)
   print('Done')
 
 

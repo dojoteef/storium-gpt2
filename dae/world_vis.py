@@ -204,57 +204,6 @@ generate_latex_table(content=topic_row_list, Sci_Notn=False, row_names = world_r
 
 
 
-# impt_list, freq_list, content = get_relative_important_topics(world_topic_freq_list_dict['The Hollow'], overall_freq, topics_summarized, n_words, cutoff, threshold)
-#
-# print(impt_list)
-# print(freq_list)
-# print(content)
-
-
-# topic_rank_path = os.path.join( args.data_path, 'topics_rank/' )
-# print(topic_rank_path)
-# if not os.path.exists(topic_rank_path):
-#     os.makedirs(topic_rank_path)
-# with open( os.path.join(topic_rank_path, f'overall.txt'), 'w') as f:
-#     overall_freq_norm = overall_freq / np.sum( overall_freq )
-#     top_10 = np.argsort(overall_freq_norm, axis=0)[-10:]
-#     bot_10 = np.argsort(overall_freq_norm, axis=0)[:10]
-#     for id in np.flip( top_10):
-#         print(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#         f.write(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#         f.write('\n')
-#     print('\n ...... \n')
-#     f.write('\n ...... \n')
-#     for id in np.flip( bot_10):
-#         print(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4) } %, topic words: {topics_summarized[id]}')
-#         f.write(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#         f.write('\n')
-#
-# for idx, world_tuple in enumerate(world_counter.most_common()):
-#     world_name = world_tuple[0]
-#     if world_name == 'None':
-#         continue
-#     overall_freq =  world_topic_freq_list_dict[world_name]
-#     with open( os.path.join(topic_rank_path, f'{world_name}.txt'), 'w') as f:
-#         overall_freq_norm = overall_freq / np.sum( overall_freq )
-#         top_10 = np.argsort(overall_freq_norm, axis=0)[-10:]
-#         bot_10 = np.argsort(overall_freq_norm, axis=0)[:10]
-#         for id in np.flip( top_10):
-#             print(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#             f.write(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#             f.write('\n')
-#         print('\n ...... \n')
-#         f.write('\n ...... \n')
-#         for id in np.flip( bot_10):
-#             print(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4) } %, topic words: {topics_summarized[id]}')
-#             f.write(f'Topic {id}, freq { np.around(overall_freq_norm[id] * 100, 4)} %, topic words: {topics_summarized[id]}')
-#             f.write('\n')
-
-# generate_latex_table(content=content, Sci_Notn=False, row_names = freq_list, col_names = ['topic words'], row_header='freq(\%)', caption)
-
-
-
-
 topics_2w = []
 idx_filter_off = []
 for idx, line in enumerate( lines ):
@@ -278,21 +227,15 @@ def get_top_2(starting, topic_transition_matrix):
 
 
 
-def format_two(top_2):
-    top_2_words = [topics_summarized[i] for i in top_2]
-    top_2_str = ' ' + ' | '.join(top_2_words) + ' '
-    return top_2_str
-
 num_topics = 50
 for starting in range(num_topics):
+    if starting != 20:
+        continue
+
     print('\n\n')
     print( '=' * 100)
 
     starting_topic = topics_2w[starting]
-
-    if starting != 20:
-        continue
-
 
     print(f'Starting from topic {starting} {topics_summarized[starting]}: ')
     for idx, (world_name, _) in enumerate(world_counter.most_common()):

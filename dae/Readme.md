@@ -51,10 +51,15 @@ python -u dict_ae.py \
 
 ##  files and folders
 **preprocess.py** prepares the data from storium into the format for the DAE model.
+
 **dict_ae.py** is the model training script.
+
 **data_analysis_utils.py** includes helper functions for handling the data.
+
 **model_utils.py** includes helper functions for handling the model.
-**dae_model.py** is the script describing the model (with minor changes)
+
+**dae_model.py** is the script describing the model (with minor changes).
+
 The directory **final_pooled** stores all the intermediate data required to train the dictionary autoencoder.
 
 

@@ -45,26 +45,6 @@ rouge = Rouge(
 )
 
 
-# async def initialize_metrics():
-#     """ Initialize the metrics module """
-#     # Ensure nltk has "punkt" downloaded... it's apparently needed for py-rouge
-#     download("punkt")
-#     await load_stopwords()
-#
-#
-# async def load_stopwords():
-#     """ Load the stopword list """
-#     async with aiofiles.open(
-#         os.path.join("static", "stopwords.txt"), "rt"
-#     ) as stopword_file:
-#         stopwords.update(l.strip() for l in await stopword_file.readlines())
-#
-
-# def remove_stopwords(text: str) -> List[str]:
-#     """ Remove stop words from the given text """
-#     return [token for token in word_tokenize(text) if token.lower() not in stopwords]
-#
-
 
 def basic_check_diff(diffs_result_list):
     for diff_dict in diffs_result_list:
@@ -188,6 +168,4 @@ def get_diff_score(
         # inspection_id += 1
         # print('\n\n')
 
-    # basic_check_diff(diffs_result_list)
     return diffs_result_list
-    # pylint:enable=protected-access

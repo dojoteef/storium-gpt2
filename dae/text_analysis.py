@@ -1,6 +1,7 @@
 '''
 
-    Analyze the linguistic
+    Analyze the linguistic (POS features in particular)
+    To observe the POS distributions statistics, simply run python text_analysis.py
 
 '''
 
@@ -26,18 +27,6 @@ def simple_check_doc_tokens(doc, tokens, idx, type):
     print(f'num spacy tokens: {len(doc)}')
     print(f'num rouge tokens: {len(tokens)}')
     print()
-
-# def custom_tokenizer(text):
-#     # tokens = []
-#     #
-#     # # your existing code to fill the list with tokens
-#     #
-#     # # replace this line:
-#     # return tokens
-#     tokens = text.split()
-#     # with this:
-#     return Doc(nlp.vocab, tokens)
-# nlp.tokenizer = custom_tokenizer
 
 rouge = Rouge(
   metrics=["rouge-n", "rouge-l", "rouge-w"],

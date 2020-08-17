@@ -32,7 +32,7 @@ parser = argparse.ArgumentParser()
 
 # parameters to tune [can be changed]
 parser.add_argument('--batch_size', type=int, default=200)
-parser.add_argument('--num_epochs', type=int, default=3)
+parser.add_argument('--num_epochs', type=int, default=400)
 parser.add_argument('--dropout_rate', type=float, default=0.2)
 parser.add_argument('--d_hidden', type=int, default=100)
 parser.add_argument('--lr', type=float, default=1e-4)
@@ -42,7 +42,7 @@ parser.add_argument('--pred_world_label', help='whether we use the reconstructio
 parser.add_argument('--focus_on_world', type=str, default='')
 
 
-parser.add_argument('--freq_threshold', type=int, default=25)
+parser.add_argument('--freq_threshold', type=int, default=30)
 parser.add_argument('--occurrence_threshold', type=int, default=5)
 
 

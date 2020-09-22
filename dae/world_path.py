@@ -1,7 +1,7 @@
 '''
 
-    nalyze the narrative paths in each world by looking at topic transitions in each world.
-
+    Analyze the narrative paths in each world by looking at topic transitions in each world
+    
 '''
 
 

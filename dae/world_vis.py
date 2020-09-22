@@ -1,14 +1,3 @@
-'''
-
-    After computing the topic_transition_matrix_by_world_dict in world_path.py, we can visualize them
-    1. pie chart
-
-
-'''
-
-
-
-
 import sys
 
 print(sys.path)

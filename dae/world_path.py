@@ -1,11 +1,7 @@
 '''
 
-    We would like to analyze the narrative paths in each world by looking at topic transitions in each world
-
-    refactor to make inference faster
-
-    filter vocab
-
+    Analyze the narrative paths in each world by looking at topic transitions in each world
+    
 '''
 
 

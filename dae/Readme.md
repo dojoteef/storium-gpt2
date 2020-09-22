@@ -12,8 +12,7 @@ We use an autoencoder that also uses intuition from dictionary learning, inspire
 To run the dictionary autoencoder training script, please create a local data dir named final_pooled and then
  run:
 ```
-    cd ~/dae/ # or your own directory
-    mkdir final_pooled
+    mkdir final_pooled # or your own directory
     conda env create -f sto_env.yml
     python -u preprocess.py
     python -u dict_ae.py

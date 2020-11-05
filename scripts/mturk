@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+""" Analyze mturk judgements """
+import csv
+import argparse
+from datetime import datetime
+from typing import Dict, List, Set, Tuple
+from itertools import tee
+
+import numpy as np
+from nltk.metrics import binary_distance
+from nltk.metrics.agreement import AnnotationTask
+
+
+MONTHS = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "July": 7,
+    "Aug": 8,
+    "Sept": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
+
+
+RATING_TYPES = (
+    "coherence",
+    "fluency",
+    "likability",
+    "relevance",
+)
+
+CORRELATION_TYPES = ("alpha", "multi_kappa")
+OUTPUT_TYPES = (
+    "timing",
+    "ratings",
+    "hit_counts",
+    "correlations",
+    "excluded_worker_ids",
+)
+
+
+def parse_datetime(datetime_str):
+    """ Parse a datetime string in MTurk format """
+    _, month, day, time, _, year = datetime_str.split()
+    hours, minutes, seconds = time.split(":")
+
+    return datetime(
+        int(year), MONTHS[month], int(day), int(hours), int(minutes), int(seconds),
+    )
+
+
+def pairwise(iterable):
+    """
+    s -> (s0,s1), (s1,s2), (s2, s3), ...
+    See https://docs.python.org/3.8/library/itertools.html#itertools-recipes
+    """
+    x, y = tee(iterable)
+    next(y, None)
+    return zip(x, y)
+
+
+def intensity_agnostic_distance(label1, label2):
+    """ An 'intensity agnostic' distance function for Fleiss' Kappa """
+    if label1 == label2:
+        return 0
+
+    if (label1 == 1 and label2 == 2) or (label1 == 2 and label2 == 1):
+        return 0
+
+    if (label1 == 4 and label2 == 5) or (label1 == 5 and label2 == 4):
+        return 0
+
+    return 1
+
+
+def parse_args():
+    """ Parse command line arguments """
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "paths", type=str, nargs="+", help="The path to the judgements CSV file",
+    )
+    parser.add_argument(
+        "-c",
+        "--correlation",
+        dest="correlations",
+        default=[],
+        action="append",
+        choices=CORRELATION_TYPES,
+        help="Which correlations to outputs. By default all correlations",
+    )
+    parser.add_argument(
+        "-d",
+        "--distance",
+        type=str,
+        default="binary",
+        choices=("binary", "agnostic"),
+        help="Which distance to use for Fleiss' Kappa"
+        " (binary means exact match, agnostic implies ratings 1=2 and 4=5).",
+    )
+    parser.add_argument(
+        "-m",
+        "--model",
+        dest="models",
+        default=[],
+        action="append",
+        help="The list of models to assess. By default assess all models jointly.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="outputs",
+        default=[],
+        action="append",
+        choices=OUTPUT_TYPES,
+        help="What analysis to output. By default output all types",
+    )
+    parser.add_argument(
+        "-r",
+        "--rating-type",
+        default=[],
+        action="append",
+        dest="rating_types",
+        choices=RATING_TYPES,
+        help="Which rating types to analyze. By default analyzes all rating types.",
+    )
+    parser.add_argument(
+        "-t",
+        "--time-threshold",
+        type=int,
+        default=[],
+        action="append",
+        help="Throw out results where the median time between submits is less than this threshold.",
+    )
+    parser.add_argument(
+        "-w",
+        "--include-worker-id",
+        default=[],
+        action="append",
+        dest="include_worker_ids",
+        help="Worker id to include for measuring correlation. Can be specified multiple times",
+    )
+    parser.add_argument(
+        "-W",
+        "--exclude-worker-id",
+        default=[],
+        action="append",
+        dest="exclude_worker_ids",
+        help="Worker id to exclude from measuring correlation. Can be specified multiple times",
+    )
+
+    args = parser.parse_args()
+    args.outputs = args.outputs or OUTPUT_TYPES
+    args.rating_types = args.rating_types or RATING_TYPES
+    args.correlations = args.correlations or CORRELATION_TYPES
+
+    args.distance = (
+        binary_distance if args.distance == "binary" else intensity_agnostic_distance
+    )
+
+    return args
+
+
+def get_hit_filter(
+    lines, models=tuple(), include_worker_ids=tuple(), exclude_worker_ids=tuple(),
+):
+    """ Filter the hits based on worker ids """
+    reader = csv.DictReader(lines)
+    acceptable_hits: Set[str] = set()
+    unacceptable_hits: Set[str] = set()
+    for row in reader:
+        task_id = row["HITId"]
+        worker_id = row["WorkerId"]
+        model_name = row["Input.model_name"]
+        if include_worker_ids and worker_id in include_worker_ids:
+            acceptable_hits.add(task_id)
+
+        if exclude_worker_ids and worker_id in exclude_worker_ids:
+            unacceptable_hits.add(task_id)
+
+        if models and model_name not in models:
+            unacceptable_hits.add(task_id)
+
+    return lambda hit: (not acceptable_hits or hit not in acceptable_hits) or (
+        unacceptable_hits and hit in unacceptable_hits
+    )
+
+
+def compute_correlations(data, distance=binary_distance, metrics=("multi_kappa",)):
+    """ Compute the agreement on the data """
+    task = AnnotationTask(data, distance=distance)
+    return {metric: getattr(task, metric)() for metric in metrics}
+
+
+def extract_ratings(lines, rating_types=RATING_TYPES, hit_filter=lambda x: False):
+    """ Extract rating stats """
+    reader = csv.DictReader(lines)
+    ratings: Dict[str, Dict[str, Set[int]]] = {
+        rating_type: {} for rating_type in rating_types
+    }
+    ratings_by_type: Dict[str, List[int]] = {
+        rating_type: [] for rating_type in rating_types
+    }
+    for row in reader:
+        task_id = row["HITId"]
+        if hit_filter(task_id):
+            continue
+
+        for category, task_ratings in ratings.items():
+            rating = int(row[f"Answer.{category}"])
+            ratings_by_type[category].append(rating)
+            rating_set = task_ratings.get(task_id, set())
+            rating_set.add(rating)
+            ratings[category][task_id] = rating_set
+
+    ratings_stats: Dict[str, Dict[str, float]] = {}
+    for category, task_rating_list in ratings_by_type.items():
+        ratings_stats[category] = {
+            "std": np.std(task_rating_list),
+            "mean": np.mean(task_rating_list),
+            "median": np.median(task_rating_list),
+        }
+
+    return ratings, ratings_stats
+
+
+def extract_judgments(lines, rating_types=RATING_TYPES, hit_filter=lambda x: False):
+    """ Extract judgements for each rating """
+    reader = csv.DictReader(lines)
+
+    worker_mapping: Dict[str, int] = {}
+    judgements: Dict[str, List[Tuple[int, str, int]]] = {
+        rating_type: [] for rating_type in rating_types
+    }
+    for row in reader:
+        task_id = row["HITId"]
+        worker_mapping[task_id] = worker_mapping.get(task_id, 0) + 1
+
+        worker_pseudo_id = worker_mapping[task_id]
+        for category, task_judgements in judgements.items():
+            rating = int(row[f"Answer.{category}"])
+            task_judgements.append((worker_pseudo_id, task_id, rating))
+
+    return {
+        category: [triple for triple in task_judgements if not hit_filter(triple[1])]
+        for category, task_judgements in judgements.items()
+    }
+
+
+def extract_worker_stats(lines, time_threshold=0):
+    """ Extract worker stats """
+
+    def meets_threshold(median_time):
+        """ Simple time threshold based on median time taken on HIT """
+        return not time_threshold or median_time > time_threshold
+
+    reader = csv.DictReader(lines)
+    unique_workers: Dict[str, int] = {}
+    worker_accept_times: Dict[str, List[datetime]] = {}
+    worker_submit_times: Dict[str, List[datetime]] = {}
+    for row in reader:
+        worker_id = row["WorkerId"]
+        unique_workers[worker_id] = unique_workers.get(worker_id, 0) + 1
+
+        accept_times = worker_accept_times.get(worker_id, [])
+        accept_times.append(parse_datetime(row["AcceptTime"]))
+        worker_accept_times[worker_id] = accept_times
+
+        submit_times = worker_submit_times.get(worker_id, [])
+        submit_times.append(parse_datetime(row["SubmitTime"]))
+        worker_submit_times[worker_id] = submit_times
+
+    time_stats: Dict[str, Dict[str, float]] = {}
+    for worker_id, submit_times in worker_submit_times.items():
+        submit_times = sorted(submit_times)
+        accept_times = sorted(worker_accept_times[worker_id])
+        total_time_diff = (submit_times[-1] - accept_times[0]).total_seconds()
+        if len(submit_times) > 1:
+            time_diffs = [
+                (end - start).total_seconds()
+                for start, end in pairwise(sorted(submit_times))
+            ]
+            median = np.median(time_diffs)
+            if meets_threshold(median):
+                time_stats[worker_id] = {
+                    "std": np.std(time_diffs),
+                    "mean": np.mean(time_diffs),
+                    "median": median,
+                    "submits": len(submit_times),
+                    "total_time": total_time_diff,
+                }
+        elif meets_threshold(total_time_diff):
+            time_stats[worker_id] = {
+                "std": 0,
+                "mean": total_time_diff,
+                "median": total_time_diff,
+                "submits": 1,
+                "total_time": total_time_diff,
+            }
+
+    histogram = {}
+    for bucket in pairwise((1, 2, 10, 25, 50, float("inf"))):
+        start = str(bucket[0])
+        end = str(bucket[1])
+        key = f"[{start}]" if start == end else f"[{start}-{end})"
+        histogram[key] = sum(
+            1 for c in unique_workers.values() if c >= bucket[0] and c < bucket[1]
+        )
+
+    return histogram, time_stats, unique_workers.keys()
+
+
+def print_stats(lines, args, time_threshold):
+    """ Print the requested stats given the time threshold """
+    # First compute histogram and filter for unacceptable HITs
+    histogram, time_stats, all_workers = extract_worker_stats(
+        lines, time_threshold=time_threshold
+    )
+    hit_filter = get_hit_filter(
+        lines,
+        models=args.models,
+        exclude_worker_ids=args.exclude_worker_ids,
+        include_worker_ids=args.include_worker_ids + list(time_stats.keys()),
+    )
+
+    print(f"Time threshold={time_threshold}s\n")
+    if "hit_counts" in args.outputs:
+        print(f"Num HITs per worker")
+        for bucket, count in histogram.items():
+            print(f" {bucket}: {count}")
+        print(f"#Unique workers={sum(histogram.values())}\n")
+
+    if "excluded_worker_ids" in args.outputs:
+        print("Excluded workers:")
+        for worker_id in set(all_workers) - set(time_stats.keys()):
+            print(worker_id)
+        print("")
+
+    if "timing" in args.outputs:
+        print("Worker time stats")
+        for worker_id, stats in sorted(
+            time_stats.items(), key=lambda x: x[1]["median"]
+        ):
+            print(
+                f" {worker_id}: mean={stats['mean']:.2f}s"
+                f", std={stats['std']:.2f}s"
+                f", median={stats['median']}s"
+                f", #submits={stats['submits']}"
+                f", total_time={stats['total_time']:.0f}s"
+            )
+        print("")
+
+    if "correlations" in args.outputs:
+        print("Correlations")
+        for category, judgements in extract_judgments(
+            lines, rating_types=args.rating_types, hit_filter=hit_filter
+        ).items():
+            for key, value in compute_correlations(
+                judgements, distance=args.distance, metrics=args.correlations
+            ).items():
+                print(
+                    f" {category} ({key}): {value:.2f}, total_tasks = {len(judgements) // 3}"
+                )
+        print("")
+
+    if "ratings" in args.outputs:
+        ratings, rating_stats = extract_ratings(
+            lines, rating_types=args.rating_types, hit_filter=hit_filter
+        )
+        for category, task_ratings in ratings.items():
+            unique_counts = {1: 0, 2: 0, 3: 0}
+            for rating_set in task_ratings.values():
+                unique_ratings = (
+                    sum(args.distance(x, y) for x, y in pairwise(sorted(rating_set)))
+                    + 1
+                )
+                unique_counts[unique_ratings] += 1
+
+            print(f"Unique Ratings ({category})")
+            total_ratings = sum(unique_counts.values())
+            for ratings, counts in unique_counts.items():
+                percent = counts / total_ratings
+                print(
+                    f" {ratings} unique ratings: {counts} / {total_ratings} ({percent:.2%})"
+                )
+            print("")
+
+        for category, stats in rating_stats.items():
+            print(
+                f"Ratings stats ({category}): "
+                f" mean={stats['mean']:.2f}"
+                f", std={stats['std']:.2f}"
+                f", median={stats['median']}"
+            )
+
+
+def main():
+    """ Load and run the agreement """
+    args = parse_args()
+    lines = []
+    for idx, path in enumerate(args.paths):
+        with open(path, "rt") as csv_file:
+            csv_lines = csv_file.readlines()
+            if idx:
+                csv_lines = csv_lines[1:]
+
+            lines.extend(csv_lines)
+
+    for time_threshold in args.time_threshold or [0]:
+        print("*" * 60)
+        print_stats(lines, args, time_threshold)
+
+
+if __name__ == "__main__":
+    main()

@@ -247,9 +247,9 @@ process_stories "'$BOOL2INT; $USER_PIDS | [$PLAYED_CARDS | $IS_USER_CREATED] | a
 
 NARRATOR_ENTRIES=".scenes[].entries | map(select(.author_is_narrator_when_published))"
 CHARACTER_ENTRIES=".scenes[].entries | map(select(.author_is_narrator_when_published | not))"
-CHARACTER_CARDS="$CHARACTER_ENTRIES[] | .cards_played_on_challenge"
+CHARACTER_CARDS="${CHARACTER_ENTRIES}[] | .cards_played_on_challenge"
 process_stories "'$NARRATOR_ENTRIES | map(select(.place_card != null)) | length'" | compute_stats | write_stats "location cards played by narrators"
-process_stories "'$NARRATOR_ENTRIES[] | .challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" 25 2 | write_stats "challenge cards played by narrators"
+process_stories "'${NARRATOR_ENTRIES}[] | .challenge_cards | length'" | compute_stats_and_plot "Challenge Cards per Entry" 25 2 | write_stats "challenge cards played by narrators"
 process_stories "'$CHARACTER_CARDS | length'" | compute_stats_and_plot "Played Cards per Entry" | write_stats "cards played by characters"
 process_stories "'$CHARACTER_CARDS | map(select(.via_wild_exchanged_for == \"new\")) | length'" | compute_stats_and_plot "Played Wild Cards per Entry" | write_stats "wild cards played by characters"
 process_stories "'$CHARACTER_CARDS | map(select(.via_wild_exchanged_for != \"new\")) | length'" | compute_stats_and_plot "Played Regular Cards per Entry" | write_stats "regular cards played by characters"

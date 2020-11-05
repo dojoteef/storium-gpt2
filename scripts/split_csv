@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""
+Simple utility to split a CSV file into several smaller chunks
+"""
+import os
+import csv
+import argparse
+from contextlib import ExitStack
+from itertools import cycle
+
+
+def parse_args():
+    """ Parse the command-line args """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", type=str, help="Path to the CSV to split")
+    parser.add_argument(
+        "-n", "--num-chunks", type=int, help="How many chunks to split the csv into"
+    )
+
+    return parser.parse_args()
+
+
+def chunk_path(path, idx):
+    """ Return a path for the given chunk idx """
+    root, ext = os.path.splitext(path)
+    path = f"{root}{idx}{ext}"
+
+    if os.path.exists(path):
+        raise RuntimeError(f"File at {path} already exists!")
+
+    return path
+
+
+def main():
+    """ This is the main entry point of the script """
+    args = parse_args()
+    with ExitStack() as stack:
+        csv_file = stack.enter_context(open(args.path, "rt"))
+        reader = csv.DictReader(csv_file)
+        writers = [
+            csv.DictWriter(
+                stack.enter_context(open(chunk_path(args.path, idx), "wt")),
+                reader.fieldnames,
+            )
+            for idx in range(1, args.num_chunks + 1)
+        ]
+
+        # Must first explicitly write the headers
+        for writer in writers:
+            writer.writeheader()
+
+        for row, writer in zip(reader, cycle(writers)):
+            writer.writerow(row)
+
+
+if __name__ == "__main__":
+    main()

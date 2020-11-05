@@ -1350,7 +1350,8 @@ def perform_split(args):
         with open(
             os.path.join(args.output_dir, f"{split}_filenames.txt"), "wt"
         ) as split_file:
-            split_file.write("\n".join(filenames))
+            # Technically POSIX requires text files to end in a newline...
+            split_file.write("\n".join(filenames) + "\n")
 
 
 def define_split_args(

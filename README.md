@@ -33,7 +33,7 @@ preprocess, and generate.
 This repository contains the code that makes our GPT-2 story generation models
 deployable on our [evaluation platform](https://storium.cs.umass.edu), so it
 serves as a great template for how to structure your code.  Please see the file
-[figmentator.py](figmentator.py) for the simple API required for making your
+[figmentate.py](figmentator.py) for the simple API required for making your
 model deployable on our platform. You will also need to provide a json file
 with any properties needed to pass to your startup method. See for example the
 properties below:

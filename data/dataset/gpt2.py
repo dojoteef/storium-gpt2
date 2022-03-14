@@ -1,9 +1,8 @@
 """
 Utilities and classes for manipulating the dataset
 """
-import os
 import logging
-import argparse
+import os
 from multiprocessing import Pool
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -11,14 +10,8 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from data.preprocess import (
-    Preprocessor,
-    tensorize,
-    SpecialToken,
-    SPLIT_NAMES,
-    get_tokenizer,
-    AVAILABLE_TOKENIZERS,
-)
+from data.preprocess import get_tokenizer, tensorize
+from data.preprocess.gpt2 import Preprocessor, SpecialToken
 
 
 class StoriumDataset(Dataset):
@@ -92,10 +85,8 @@ class StoriumDataset(Dataset):
         self,
         filenames: List[str],
         directory: str,
-        history: int = 0,
-        character_history: int = 0,
-        naive_layout: bool = False,
         force: bool = False,
+        **preprocessor_kwargs,
     ):
         """
         Process the stories from the file list and generate the tensors for the
@@ -119,12 +110,7 @@ class StoriumDataset(Dataset):
 
         results = []
         pool = Pool()
-        preprocessor = Preprocessor(
-            self.get_tokenizer(),
-            history=history,
-            character_history=character_history,
-            naive_layout=naive_layout,
-        )
+        preprocessor = Preprocessor(self.get_tokenizer(), **preprocessor_kwargs)
         for filename in filenames:
             results.append(
                 pool.apply_async(type(self)._process, [filename, preprocessor])
@@ -197,69 +183,3 @@ class StoriumDataset(Dataset):
                     f"  {token} (min={token_min},avg={token_avg:.2f},max={token_max})"
                 )
         return "\n".join(strings)
-
-
-def perform_preprocessing(args):
-    """
-    Preprocess the dataset according to the passed in args
-    """
-    for split in SPLIT_NAMES:
-        with open(os.path.join(args.data_dir, f"{split}_filenames.txt"), "rt") as file:
-            filenames = [
-                os.path.join(args.data_dir, filename).strip()
-                for filename in file.readlines()
-            ]
-
-        dataset = StoriumDataset(split, args.tokenizer, cache_dir=args.cache_dir)
-        dataset.process(
-            filenames,
-            args.output_dir,
-            history=args.history,
-            character_history=args.character_history,
-            naive_layout=args.naive_layout,
-            force=args.force,
-        )
-
-        if logging.getLogger().getEffectiveLevel() <= logging.INFO:
-            dataset.load(args.output_dir)
-
-        logging.info("%s %s", split, dataset.stats_str())
-
-
-def define_preprocess_args(
-    sub_parsers: argparse._SubParsersAction,  # pylint:disable=protected-access
-):
-    """ Define the arguments needed for the preprocess command """
-    parser = sub_parsers.add_parser("preprocess", help="Preprocess the dataset")
-    parser.add_argument(
-        "--tokenizer",
-        type=str,
-        choices=AVAILABLE_TOKENIZERS,
-        default="gpt2",
-        help="The tokenizer to use for preprocessing the dataset",
-    )
-    parser.add_argument(
-        "--history",
-        type=int,
-        default=0,
-        help="How many entry summaries to include for context",
-    )
-    parser.add_argument(
-        "--character-history",
-        type=int,
-        default=0,
-        help="How many character specific entry summaries to include for context",
-    )
-    parser.add_argument(
-        "--naive-layout",
-        action="store_true",
-        default=False,
-        help="Whether to force preprocessing if preprocessed data already exists",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help="Whether to force preprocessing if preprocessed data already exists",
-    )
-    parser.set_defaults(func=perform_preprocessing)

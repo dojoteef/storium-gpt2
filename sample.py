@@ -9,8 +9,9 @@ from torch.nn import functional as F
 from transformers import GPT2Config, PreTrainedModel
 
 from data.parallel import StaticDataParallel
-from data.preprocess import SpecialToken, get_tokenizer
-from data.utils import collate, EntryList
+from data.preprocess import get_tokenizer
+from data.preprocess.gpt2 import SpecialToken
+from data.utils import EntryList, collate
 from model import GPT2SegmentedModel
 
 

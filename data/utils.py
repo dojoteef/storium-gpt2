@@ -1,22 +1,17 @@
 """
 Data related utilities
 """
-from typing import Any, Callable, Dict, Sequence, Union
 from argparse import Namespace
 from itertools import chain
+from typing import Any, Callable, Dict, Sequence, Union
 
 import torch
 from torch import nn
-from torch.utils.data import (
-    Sampler,
-    BatchSampler,
-    RandomSampler,
-    SequentialSampler,
-    DataLoader,
-)
-from data.dataset import StoriumDataset
-from data.sampler import SequenceLengthSampler
+from torch.utils.data import (BatchSampler, DataLoader, RandomSampler, Sampler,
+                              SequentialSampler)
 
+from data.dataset import GPT2StoriumDataset as StoriumDataset
+from data.sampler import SequenceLengthSampler
 
 EntryList = Sequence[Dict[str, Any]]
 
@@ -31,7 +26,9 @@ def collate(entries: Union[Sequence[EntryList], EntryList]) -> Dict[str, Any]:
         Collate a list of entries
         """
         tokens = nn.utils.rnn.pad_sequence(
-            tuple(e["tokens"] for e in entry_list), batch_first=True, padding_value=-1,
+            tuple(e["tokens"] for e in entry_list),
+            batch_first=True,
+            padding_value=-1,
         )
         max_length = tokens.shape[-1]
 
@@ -42,7 +39,10 @@ def collate(entries: Union[Sequence[EntryList], EntryList]) -> Dict[str, Any]:
             return nn.utils.rnn.pad_sequence(
                 tuple(
                     torch.cat(
-                        (s[field], s[field].new_full((max_length - len(s[field]),), 0),)
+                        (
+                            s[field],
+                            s[field].new_full((max_length - len(s[field]),), 0),
+                        )
                     )
                     for s in entry["segments"]
                 ),
@@ -118,7 +118,7 @@ def get_dataloader(
     num_workers: int = 0,
     shuffle: bool = False,
 ):
-    """ Utility function that gets a data loader """
+    """Utility function that gets a data loader"""
     batch_sampler: Sampler
     if config.batch_method == "token":
         # Calculate batch sizes for each device. Potentially reduce the batch size on device 0 as

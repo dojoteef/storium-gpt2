@@ -1,29 +1,21 @@
 """
 Generate from our Storium models
 """
-import sys
-import logging
 import argparse
-from functools import partial
-from typing import Any, Dict, List, Tuple
-from types import SimpleNamespace
-from asyncio import (
-    Task,
-    Queue,
-    gather,
-    wait_for,
-    as_completed,
-    ensure_future,
-    new_event_loop,
-    get_event_loop,
-    set_event_loop,
-    TimeoutError as AsyncTimeoutError,
-)
+import logging
+import sys
+from asyncio import Queue, Task
+from asyncio import TimeoutError as AsyncTimeoutError
+from asyncio import (as_completed, ensure_future, gather, get_event_loop,
+                     new_event_loop, set_event_loop, wait_for)
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from types import SimpleNamespace
+from typing import Any, Dict, List, Tuple
 
 from tqdm import tqdm
 
-from data.dataset import StoriumDataset
+from data.dataset import GPT2StoriumDataset as StoriumDataset
 from data.preprocess import SPLIT_NAMES
 from data.utils import narrow
 from sample import SampleGenerator
@@ -58,7 +50,7 @@ class Scheduler:
         self.workers = [ensure_future(self.main_loop()) for _ in range(num_workers)]
 
     async def main_loop(self):
-        """ Consume a batch of tasks and execute them """
+        """Consume a batch of tasks and execute them"""
         while True:
             tasks = [await self.queue.get()]
             while len(tasks) < self.batch_size:

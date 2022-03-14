@@ -1,75 +1,21 @@
 """
 This file contains a number of utility methods for preprocessing stories.
 """
-import os
-import glob
 import json
-import zlib
-import heapq
-import bisect
 import logging
-import argparse
-from numbers import Number
-from dataclasses import dataclass
-from itertools import islice, zip_longest
+import zlib
 from contextlib import contextmanager
-
+from dataclasses import dataclass
 from enum import Enum, auto, unique
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from itertools import islice, zip_longest
+from typing import (Any, Dict, Iterable, List, Optional, Sequence, Tuple,
+                    TypeVar, Union)
 
 import torch
 from kiwisolver import Constraint, Solver, Variable, strength
-from transformers import (
-    AutoTokenizer,
-    BertTokenizer,
-    OpenAIGPTTokenizer,
-    GPT2Tokenizer,
-    TransfoXLTokenizer,
-    XLNetTokenizer,
-    XLMTokenizer,
-    RobertaTokenizer,
-    DistilBertTokenizer,
-    PreTrainedTokenizer,
-)
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
-SPLIT_NAMES = ("train", "validation", "test")
-AVAILABLE_TOKENIZERS = [
-    model
-    for tokenizer_type in (
-        BertTokenizer,
-        OpenAIGPTTokenizer,
-        GPT2Tokenizer,
-        TransfoXLTokenizer,
-        XLNetTokenizer,
-        XLMTokenizer,
-        RobertaTokenizer,
-        DistilBertTokenizer,
-    )
-    for model in tokenizer_type.max_model_input_sizes
-]
-
-
-###############################################################################
-# IDEA:
-# Make all the summarize_* methods take in a dropout probability, such that
-# they randomly dropout a component as SpecialToken.missing, but the loss is
-# still calculated against the full sequence, such that it can learn to fill in
-# missing data.
-#
-# This, for example, could be used as a simple technique for predicting a card
-# to play for the "wild" cards. Could use the BART model for this.
-###############################################################################
+from data.preprocess import IndexedDict, IndexedSet, Trim
 
 
 @unique
@@ -146,20 +92,6 @@ class SpecialToken(str, Enum):
         return self.value
 
 
-class Trim(Enum):
-    """
-    An enum denoting how to trim a Segment that is too long
-
-    - **start**: trim the start of the segment
-    - **end**: trim the end of the segment
-    - **middle**: trim the middle of the segment
-    """
-
-    start = auto()
-    end = auto()
-    middle = auto()
-
-
 class Segment(tuple):
     """
     This structure holds a sequence of token ids from the tokenizer vocabulary, along with a
@@ -194,7 +126,7 @@ class Segment(tuple):
         """
         Create a Segment
         """
-        self = super().__new__(cls, (*iterable))  # type: ignore
+        self = super().__new__(cls, *iterable)  # type: ignore
 
         # Initialize the layout related variables before iterating over the
         # newly created tuple. It must be unconstrained to begin with.
@@ -548,61 +480,6 @@ class Segment(tuple):
         return segment_dict
 
 
-DataType = TypeVar("DataType")
-
-
-class IndexedSet(List[DataType]):
-    """
-    A class that makes indexing a unique sorted list easy. All the entries must
-    have unique keys, if you try to insert an already existing key, it will
-    raise an error.
-
-    Loosely based on SortedCollection, which is referenced in the python docs
-    for bisect.
-
-    See: https://code.activestate.com/recipes/577197-sortedcollection/
-    """
-
-    def __init__(self, *iterable: Iterable[DataType], key=int):
-        super().__init__()
-        self._key = key
-        self._keys: List[Any] = []
-
-        # Ensure the list is in sorted order by inserting one at a time
-        for value in tuple(*iterable):
-            self.insert(value)
-
-    def insert(self, value):
-        """
-        Insert into the set
-        """
-        key = self._key(value)
-        idx = bisect.bisect_left(self._keys, key)
-        if (
-            idx != len(self._keys)
-            and self[idx] == value  # pylint:disable=unsubscriptable-object
-        ):
-            # it's already in the set, no need to insert it
-            return
-
-        self._keys.insert(idx, key)
-        super().insert(idx, value)  # pylint:disable=no-member
-
-    def index(self, value: DataType) -> int:  # type: ignore
-        """
-        Find the index of the item in the set
-        """
-        key = self._key(value)
-        idx = bisect.bisect_left(self._keys, key)
-        if (
-            idx != len(self._keys)
-            and self[idx] == value  # pylint:disable=unsubscriptable-object
-        ):
-            return idx
-
-        raise ValueError(f"{value} not in set")
-
-
 @dataclass
 class CharacterInfo:
     """
@@ -630,49 +507,6 @@ class EntryInfo:
     checksum: int
     text: Segment
     summary: Segment
-
-
-class IndexedDict(Dict[str, DataType]):
-    """
-    A convenient wrapper around dict that allows integer-based indexing
-    operations
-    """
-
-    indices: List[str]
-    reverse_indices: Dict[str, int]
-
-    def __init__(
-        self, mapping: Union[Iterable[Tuple[str, DataType]], Mapping[str, DataType]]
-    ):
-        super().__init__()
-        self.indices = []
-        self.reverse_indices = {}
-
-        if isinstance(mapping, Mapping):
-            mapping = mapping.items()
-
-        for idx, (key, value) in enumerate(mapping):
-            self.indices.append(key)
-            self.reverse_indices[key] = idx
-            super().__setitem__(key, value)  # pylint:disable=no-member
-
-    def __reduce__(self):
-        return (type(self), (dict(self),))
-
-    def __delitem__(self, key: str):
-        raise RuntimeError("IndexedDict is immutable!")
-
-    def __setitem__(self, key: str, value: DataType):
-        raise RuntimeError("IndexedDict is immutable!")
-
-    def index(self, key: str) -> int:
-        """
-        Return the index of the key
-        """
-        try:
-            return self.reverse_indices[key]
-        except KeyError:
-            raise ValueError(f"{key} not in dict")
 
 
 @dataclass
@@ -804,7 +638,9 @@ class Preprocessor:
                 )
                 for field in ("name", "description")
             ),
-            segment_ids=[self.tokenizer.convert_tokens_to_ids(SpecialToken.character),],
+            segment_ids=[
+                self.tokenizer.convert_tokens_to_ids(SpecialToken.character),
+            ],
         )
 
     def checksum_card(self, card: Optional[Dict[str, Any]], checksum: int = 1) -> int:
@@ -834,7 +670,8 @@ class Preprocessor:
         return Segment(
             iter(
                 self.encode_special(
-                    extract_string(field, card), SpecialToken.from_string(field),
+                    extract_string(field, card),
+                    SpecialToken.from_string(field),
                 )
                 for field in ("name", "description", "success_stakes", "failure_stakes")
                 if card.get(field)
@@ -1023,7 +860,12 @@ class Preprocessor:
                     summary=self.summarize_character(character),
                 )
 
-            character_list.append((character_id, character_info,))
+            character_list.append(
+                (
+                    character_id,
+                    character_info,
+                )
+            )
 
         all_characters = IndexedDict(character_list)
         entry_list: List[Tuple[str, EntryInfo]] = []
@@ -1063,9 +905,11 @@ class Preprocessor:
                     establishment_list.append((entry_id, entry_info))
 
                 # See https://github.com/PyCQA/pylint/issues/3129
-                character_info = all_characters[  # pylint:disable=unsubscriptable-object
-                    entry["role"]
-                ]
+                character_info = (
+                    all_characters[  # pylint:disable=unsubscriptable-object
+                        entry["role"]
+                    ]
+                )
                 character_info.entry_ids.insert(entry_id)
 
         return ProcessedStory(
@@ -1179,202 +1023,3 @@ class Preprocessor:
             return Segment()
 
         return Segment((self.get_entry_summary(story, entry_info), entry_info.text))
-
-
-def tensorize(
-    nested: Union[Sequence, Mapping]
-) -> Union[Sequence, Mapping, torch.Tensor]:
-    """
-    Convert the potentially nested sequence or mapping of ints to torch tensors
-    """
-    if not nested:
-        return nested
-
-    if isinstance(nested, Sequence):
-        element = nested[0]
-        if isinstance(element, Number):
-            return torch.tensor(nested)  # pylint:disable=not-callable
-        elif isinstance(element, Sequence) or isinstance(element, Mapping):
-            return type(nested)(tensorize(e) for e in nested)  # type: ignore
-    elif isinstance(nested, Mapping):
-        element = next(iter(nested.values()))
-        if isinstance(element, Sequence) or isinstance(element, Mapping):
-            return {k: tensorize(v) for k, v in nested.items()}
-
-    return nested
-
-
-def get_tokenizer(tokenizer_name: str, cache_dir: Optional[str] = None):
-    """
-    Get a tokenizer for the dataset
-    """
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=cache_dir)
-
-    # Cannot specify "additional_special_tokens" in the call to
-    # from_pretrained, as that requires the tokens to already be in the
-    # vocabulary. Rather, making a call to add_special_tokens automatically
-    # adds the tokens to the vocabulary if they are not already present.
-    tokenizer.add_special_tokens({"additional_special_tokens": list(SpecialToken)})
-
-    return tokenizer
-
-
-def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
-    """
-    Return a list of files that split the dataset according to these constraints:
-
-    1) They approximately meet the passed in splits, which are treated as
-    ratios by taking splits[i]/sum(splits)
-    2) We balance the number of stories and token counts for each split
-    according to the ratios
-
-    NOTE: The number of words in an entry is based upon splitting along
-    whitespace boundaries. This is to divorce the dataset splits from any
-    particular tokenization scheme, e.g. GPT2
-    """
-    story_info = []
-    total_files = 0.0
-    total_words = 0.0
-    total_scenes = 0.0
-    total_entries = 0.0
-    data_path = os.path.abspath(data_path)
-    for filename in glob.glob(os.path.join(data_path, "**/*.json"), recursive=True):
-        with open(filename, "rt") as file:
-            story = json.load(file)
-
-        num_words = 0
-        num_entries = 0
-        scenes = story.get("scenes", [])
-        for scene in scenes:
-            entries = scene.get("entries", [])
-            num_entries += len(entries)
-            for entry in entries:
-                description = extract_string("description", entry, "")
-
-                # We do a very simple tokenization that simply splits on whitespace to
-                # get a ballpark estimate of the length of the story, only looking at
-                # written entries (not cards, challenges, etc since they make up a
-                # small fraction of the total written text in a story). This
-                # works well enough in practice to get decently balanced
-                # splits.
-                num_words += len(description.split())
-
-        num_scenes = len(scenes)
-
-        total_files += 1
-        total_words += num_words
-        total_scenes += num_scenes
-        total_entries += num_entries
-
-        story_info.append((num_words, num_entries, num_scenes, filename,))
-
-    class Split:
-        """
-        A class that encapsulates a split and allows for comparisons
-        """
-
-        def __init__(self, idx: int, ratio: float):
-            self.words = 0
-            self.scenes = 0
-            self.entries = 0
-
-            self.idx = idx
-            self.ratio = ratio
-            self.filenames: List[str] = []
-
-        def add(self, words: int, entries: int, scenes: int, filename: str):
-            """ Add a file to the split """
-            self.words += words
-            self.scenes += scenes
-            self.entries += entries
-            self.filenames.append(filename.replace(data_path, "").lstrip("/"))
-
-        @property
-        def weight(self) -> float:
-            """ Return the 'weight' of the split """
-            return self.words / self.ratio
-
-        def __lt__(self, other: Any) -> bool:
-            return (
-                self.weight < other.weight
-                if isinstance(other, Split)
-                else NotImplemented
-            )
-
-        def __str__(self) -> str:
-            num_files = len(self.filenames)
-            return f"Split #{self.idx}: " + ", ".join(
-                [
-                    f"words={self.words} ({self.words/total_words:.2f})",
-                    f"entries={self.entries} ({self.entries/total_entries:.2f})",
-                    f"scenes={self.scenes} ({self.scenes/total_scenes:.2f})",
-                    f"files={num_files} ({num_files/total_files:.2f})",
-                ]
-            )
-
-    # Create the priority queue for splits. The heap invariant is the "weight"
-    # of the split, but at the start no split has any files, so the order of
-    # the heap is arbitrary. Sort based on ratio to make for a deterministic
-    # splitting given the same ratios.
-    divisor = float(sum(splits))
-    split_queue: List[Split] = sorted(
-        [Split(idx, split / divisor) for idx, split in enumerate(splits)],
-        key=lambda s: s.ratio,
-        reverse=True,
-    )
-
-    # Do a reverse sort based on the words, entries, and scenes such that we
-    # handle the largest stories first. This should give better
-    # packing/balancing of splits.
-    for words, entries, scenes, filename in sorted(story_info, reverse=True):
-        best_split = heapq.heappop(split_queue)
-        best_split.add(words, entries, scenes, filename)
-        heapq.heappush(split_queue, best_split)
-
-    # Put the splits back into the original order specified for the input
-    final_splits = sorted(split_queue, key=lambda s: s.idx)
-    for split in final_splits:
-        logging.info(split)
-
-    return tuple(s.filenames for s in final_splits)
-
-
-def perform_split(args):
-    """
-    Split the dataset according to the passed in args
-    """
-    splits = split_dataset(
-        args.data_dir, (args.train_split, args.validation_split, args.test_split)
-    )
-    for split, filenames in zip(SPLIT_NAMES, splits):
-        with open(
-            os.path.join(args.output_dir, f"{split}_filenames.txt"), "wt"
-        ) as split_file:
-            # Technically POSIX requires text files to end in a newline...
-            split_file.write("\n".join(filenames) + "\n")
-
-
-def define_split_args(
-    sub_parsers: argparse._SubParsersAction,  # pylint:disable=protected-access
-):
-    """ Define the arguments needed for the split command """
-    parser = sub_parsers.add_parser("split", help="Split the dataset")
-    parser.add_argument(
-        "--train-split",
-        type=int,
-        default=8,
-        help="An int denoting the relative amount of data to use for training",
-    )
-    parser.add_argument(
-        "--validation-split",
-        type=int,
-        default=1,
-        help="An int denoting the relative amount of data to use for validation",
-    )
-    parser.add_argument(
-        "--test-split",
-        type=int,
-        default=1,
-        help="An int denoting the relative amount of data to use for testing",
-    )
-    parser.set_defaults(func=perform_split)

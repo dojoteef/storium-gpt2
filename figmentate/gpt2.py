@@ -1,5 +1,5 @@
 """
-A very basic example of a figmentator
+GPT2 figmentator
 """
 import logging
 import traceback
@@ -9,17 +9,18 @@ from figmentator.figment.base import CharacterEntryFigmentator
 from figmentator.models.figment import FigmentContext
 from figmentator.models.suggestion import SuggestionType
 
-from data.preprocess import Preprocessor, tensorize
+from data.preprocess import tensorize
+from data.preprocess.gpt2 import Preprocessor
 from sample import SampleGenerator
 
 
 class GPT2Figmentator(CharacterEntryFigmentator):
     """
-    Figmentator for GPT2 baseline models generates scene_entry suggestions
+    Figmentator for GPT2 baseline models that generate scene_entry suggestions
     """
 
     def __init__(self, suggestion_type: SuggestionType):
-        """ Initialize the figmentator """
+        """Initialize the figmentator"""
         if suggestion_type is not SuggestionType.scene_entry:
             raise ValueError("This figmentator can only generate scene entries!")
 

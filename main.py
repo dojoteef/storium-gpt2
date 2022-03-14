@@ -3,19 +3,20 @@ This file runs a number of commands including data preprocessing
 """
 import argparse
 import logging
-from typing import Any, Dict
+import sys
 from types import SimpleNamespace
+from typing import Any, Dict
 
-# import train first, so that comet initializes before torch
-from train import define_train_args
-from evaluate import define_eval_args
-from generate import define_generate_args
 from data.dataset import define_preprocess_args
 from data.preprocess import define_split_args
+from evaluate import define_eval_args
+from generate import define_generate_args
+# import train first, so that comet initializes before torch
+from train import define_train_args
 
 
 def parse_args() -> SimpleNamespace:
-    """ Parse the arguments required for splitting the dataset """
+    """Parse the arguments required for splitting the dataset"""
     parser = argparse.ArgumentParser("Storyteller")
     parser.add_argument(
         "--cache-dir",
@@ -38,13 +39,13 @@ training provide directory of preprocessed data.
         default=".",
         help="Where to output files. File types generate depend on command.",
     )
-    sub_parsers = parser.add_subparsers()
-    define_split_args(sub_parsers)
-    define_preprocess_args(sub_parsers)
-    define_eval_args(sub_parsers)
-    define_train_args(sub_parsers)
-    define_generate_args(sub_parsers)
-
+    parser.add_argument(
+        "-s",
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
     parser.add_argument(
         "-v",
         "--verbose",
@@ -52,6 +53,13 @@ training provide directory of preprocessed data.
         action="count",
         help="Whether to have verbose output",
     )
+
+    sub_parsers = parser.add_subparsers()
+    define_split_args(sub_parsers)
+    define_preprocess_args(sub_parsers)
+    define_eval_args(sub_parsers)
+    define_train_args(sub_parsers)
+    define_generate_args(sub_parsers)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
@@ -116,8 +124,10 @@ def main():
     # pylint appears confused, so disable these warnings
     # pylint:disable=no-member
     if args.verbose:
-        logging.getLogger().setLevel(
-            logging.DEBUG if args.verbose > 1 else logging.INFO
+        logging.basicConfig(
+            format="%(levelname)s:%(message)s",
+            stream=sys.stdout,
+            level=logging.DEBUG if args.verbose > 1 else logging.INFO,
         )
 
     # perform the subcommand chosen

@@ -1,27 +1,27 @@
 """
 Our evaluation script
 """
-import os
-import sys
 import argparse
 import logging
-from typing import Any, Dict, Optional
-from types import SimpleNamespace
+import os
+import sys
 from contextlib import ExitStack
+from types import SimpleNamespace
+from typing import Any, Dict, Optional
 
-from comet_ml import Experiment  # must be before torch!
 import torch
+from comet_ml import Experiment  # must be before torch!
 from tqdm import tqdm
 from transformers import GPT2Config
 
-from data.dataset import StoriumDataset
-from data.utils import get_dataloader
-from data.parallel import chunked_scattering, StaticDataParallel
+import metrics
+from data.dataset import GPT2StoriumDataset as StoriumDataset
+from data.parallel import StaticDataParallel, chunked_scattering
 from data.preprocess import SPLIT_NAMES
+from data.utils import get_dataloader
 from experiment import initialize_experiment
 from model import GPT2SegmentedModel
 from utils import tqdm_wrap_stdout
-import metrics
 
 
 class Evaluator:
@@ -84,7 +84,11 @@ class Evaluator:
         """
         if not hasattr(self, "dataset") or self.dataset.split != split:
             logging.info("Loading %s dataset", split)
-            self.dataset = StoriumDataset(split, "gpt2", cache_dir=self.args.cache_dir,)
+            self.dataset = StoriumDataset(
+                split,
+                "gpt2",
+                cache_dir=self.args.cache_dir,
+            )
             self.dataset.load(self.args.data_dir)
 
     def save(self):

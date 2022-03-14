@@ -1,46 +1,37 @@
 """
 Baseline training script
 """
-import os
-import sys
+import argparse
 import copy
 import glob
-import math
 import json
-import shutil
-import argparse
 import logging
-from typing import Any, Dict, Optional
-from types import SimpleNamespace
-from itertools import cycle
+import math
+import os
+import shutil
+import sys
 from contextlib import ExitStack
+from itertools import cycle
+from types import SimpleNamespace
+from typing import Any, Dict, Optional
 
-from comet_ml import Experiment  # must be before torch!
 import torch
 from apex import amp
+from comet_ml import Experiment  # must be before torch!
 from torch import nn
 from tqdm import tqdm
-from transformers import (
-    AdamW,
-    GPT2Config,
-    WEIGHTS_NAME,
-    get_linear_schedule_with_warmup,
-)
+from transformers import (WEIGHTS_NAME, AdamW, GPT2Config,
+                          get_linear_schedule_with_warmup)
 
-from data.dataset import StoriumDataset
-from data.utils import get_dataloader
+import metrics
+from data.dataset import GPT2StoriumDataset as StoriumDataset
 from data.parallel import chunked_scattering
+from data.utils import get_dataloader
 from evaluate import Evaluator
 from experiment import initialize_experiment
 from model import GPT2SegmentedModel
-from utils import (
-    collect_tensors,
-    tqdm_wrap_stdout,
-    tqdm_unwrap_stdout,
-    refresh_cuda_memory,
-    release_cuda_memory,
-)
-import metrics
+from utils import (collect_tensors, refresh_cuda_memory, release_cuda_memory,
+                   tqdm_unwrap_stdout, tqdm_wrap_stdout)
 
 
 class Trainer:
@@ -239,7 +230,8 @@ class Trainer:
 
         # Just use a symlink to denote the best checkpoint
         os.symlink(
-            os.path.basename(new_best_checkpoint), best_checkpoint_path,
+            os.path.basename(new_best_checkpoint),
+            best_checkpoint_path,
         )
 
     def prune_checkpoints(self) -> bool:

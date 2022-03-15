@@ -1204,26 +1204,29 @@ class Preprocessor:
                         )
                     )
 
-                    # 3. We want to trim the end of the text to a maximum length without
-                    # any ellipsis (no use in modeling more completion tokens than our max
-                    # generation length at inference)
-                    final_entry.append(
-                        entry_info.text[1].clone(
-                            trim=Trim.end,
-                            preferred_strength=i,
-                            preferred_length=self.preferred_entry_length,
-                            max_length=self.max_entry_length,
-                            ellipsis=tuple(),
+                    # Only include the text and suffix if the entry has text. Otherwise
+                    # we are encoding a completion
+                    if entry_info.text[1]:
+                        # 3. We want to trim the end of the text to a maximum length without
+                        # any ellipsis (no use in modeling more completion tokens than our max
+                        # generation length at inference)
+                        final_entry.append(
+                            entry_info.text[1].clone(
+                                trim=Trim.end,
+                                preferred_strength=i,
+                                preferred_length=self.preferred_entry_length,
+                                max_length=self.max_entry_length,
+                                ellipsis=tuple(),
+                            )
                         )
-                    )
 
-                    # 4. It must end with a unique suffix
-                    final_entry.append(
-                        Segment(
-                            self.encode_token("$$$"),
-                            fixed_length=True,
+                        # 4. It must end with a unique suffix
+                        final_entry.append(
+                            Segment(
+                                self.encode_token("$$$"),
+                                fixed_length=True,
+                            )
                         )
-                    )
 
                     compiled.append(Segment(final_entry, atomic=True))
 

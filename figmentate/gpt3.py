@@ -33,7 +33,6 @@ class GPT3Figmentator(CharacterEntryFigmentator):
 
         super().__init__(suggestion_type)
 
-        self.engine: str
         self.preprocessor: Preprocessor
         self.logit_bias: Dict[str, int]
 
@@ -107,7 +106,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             entry = self.preprocessor.decode(move)
 
         logger.debug("returning %s", entry)
-        return self.join(entry)
+        return entry
 
     def process(self, context: FigmentContext) -> Optional[Dict[str, Any]]:
         """

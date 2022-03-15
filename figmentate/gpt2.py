@@ -119,7 +119,7 @@ class GPT2Figmentator(CharacterEntryFigmentator):
                 "length": self.rate,
             }
 
-    def sample(self, processed: List[Dict[str, Any]]) -> List[str]:
+    def sample(self, processed: List[Dict[str, Any]]) -> List[Optional[str]]:
         """
         This method generates a batch of character entry text
         """

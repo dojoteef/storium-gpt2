@@ -100,7 +100,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
         """
         Build the prompt to send to GPT-3
         """
-        move = self.preprocessor.get_move(story, entry_info)
+        move = self.preprocessor.get_move(story, entry_info, add_suffix=False)
         with move.constraint(MAX_LENGTH - self.max_entry_length):
             entry = self.preprocessor.decode(move)
 
@@ -130,7 +130,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             return None
 
         return {
-            "user": entry["user_pid"],
+            "user": entry.user_pid,
             "prompt": self.build_prompt(story, entry_info),
         }
 
@@ -203,7 +203,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
         if len(processed) > 1:
             raise ValueError("This figmentator does not support batching!")
 
-        user = processed[0]["user_id"]
+        user = processed[0]["user"]
         try:
             response = openai.Completion.create(
                 user=user, prompt=processed[0]["prompt"], **self.generate_args
@@ -214,7 +214,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
 
         logger.debug(str(response))
         sample = response["choices"][0]["text"]
-        if self.should_fitler(sample, user):
+        if self.should_filter(sample, user):
             logger.warning("filtering %s", sample)
             return [None]
 

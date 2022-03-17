@@ -7,7 +7,6 @@ import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, unique
-from itertools import combinations
 from typing import (Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple,
                     Union)
 
@@ -1167,7 +1166,9 @@ class Preprocessor:
 
         return [story.entries[entry_id] for entry_id in history]
 
-    def compile_entries(self, entries: Sequence[EntryInfo]) -> Segment:
+    def compile_entries(
+        self, entries: Sequence[EntryInfo], add_suffix: bool = True
+    ) -> Segment:
         """
         Compile the list of entries into a single Segment
         """
@@ -1204,8 +1205,7 @@ class Preprocessor:
                         )
                     )
 
-                    # Only include the text and suffix if the entry has text. Otherwise
-                    # we are encoding a completion
+                    # There might not be any text for a completion
                     if entry_info.text[1]:
                         # 3. We want to trim the end of the text to a maximum length without
                         # any ellipsis (no use in modeling more completion tokens than our max
@@ -1220,19 +1220,24 @@ class Preprocessor:
                             )
                         )
 
-                        # 4. It must end with a unique suffix
-                        final_entry.append(
-                            Segment(
-                                self.encode_token("$$$"),
-                                fixed_length=True,
+                        # Only include the suffix if specified and there is text. Otherwise
+                        # we are encoding a completion
+                        if add_suffix:
+                            # 4. It must end with a unique suffix
+                            final_entry.append(
+                                Segment(
+                                    self.encode_token("$$$"),
+                                    fixed_length=True,
+                                )
                             )
-                        )
 
                     compiled.append(Segment(final_entry, atomic=True))
 
         return Segment(compiled)
 
-    def get_move(self, story: ProcessedStory, entry_info: EntryInfo) -> Segment:
+    def get_move(
+        self, story: ProcessedStory, entry_info: EntryInfo, add_suffix: bool = False
+    ) -> Segment:
         """
         Extracts the context for a given entry
         """
@@ -1260,7 +1265,7 @@ class Preprocessor:
                     preferred_strength=len(entries),
                     preferred_length=self.preferred_entry_length,
                 ),
-                self.compile_entries(entries),
+                self.compile_entries(entries, add_suffix=add_suffix),
             )
         )
 

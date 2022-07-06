@@ -16,7 +16,11 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 import torch
-from apex import amp
+
+try:
+    from apex import amp
+except ImportError:
+    pass
 from comet_ml import Experiment  # must be before torch!
 from torch import nn
 from tqdm import tqdm
@@ -59,7 +63,7 @@ class Trainer:
         """
         Whether to use fp16 training
         """
-        return torch.cuda.is_available() and self.args.optim.fp16
+        return "amp" in globals() and torch.cuda.is_available() and self.args.optim.fp16
 
     def try_init_amp(self):
         """
@@ -306,7 +310,8 @@ class Trainer:
             # params on the cpu. Not sure why this happens, as the
             # documentation seems to indicate you should call
             # amp.load_state_dict last...
-            amp.load_state_dict(train_state["amp"])
+            if self.amp_initialized:
+                amp.load_state_dict(train_state["amp"])
 
         model_state = torch.load(model_state_path)
         for name, module in self.modules.items():
@@ -479,7 +484,7 @@ class Trainer:
         # sum over the GPUs first
         loss = loss.mean()
 
-        if self.args.optim.fp16:
+        if self.use_fp16:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:

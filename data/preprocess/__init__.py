@@ -158,12 +158,20 @@ def tensorize(
     return nested
 
 
-def get_tokenizer(tokenizer_name: str, cache_dir: Optional[str] = None):
+def get_tokenizer(tokenizer_name: str, cache_dir: Optional[str] = None, additional_special_tokens: Optional[List[str]] = None):
     """
     Get a tokenizer for the dataset
     """
-    return AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=cache_dir)
 
+    # Cannot specify "additional_special_tokens" in the call to
+    # from_pretrained, as that requires the tokens to already be in the
+    # vocabulary. Rather, making a call to add_special_tokens automatically
+    # adds the tokens to the vocabulary if they are not already present.
+    if additional_special_tokens:
+        tokenizer.add_special_tokens({"additional_special_tokens": additional_special_tokens})
+
+    return tokenizer
 
 def split_dataset(data_path, splits: Tuple[int, ...]) -> Tuple[List[str], ...]:
     """

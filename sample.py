@@ -37,7 +37,9 @@ class SampleGenerator:
         self.temperature = temperature
         self.repetition_penalty = repetition_penalty
         self.cache_dir = cache_dir
-        self.tokenizer = get_tokenizer("gpt2", cache_dir=cache_dir)
+        self.tokenizer = get_tokenizer(
+            "gpt2", cache_dir=cache_dir, additional_special_tokens=list(SpecialToken)
+        )
         self.move_id = self.tokenizer.convert_tokens_to_ids(SpecialToken.move)
         self.separator_id = self.tokenizer.convert_tokens_to_ids(SpecialToken.separator)
 

@@ -10,6 +10,7 @@ import openai
 from figmentator.figment.base import CharacterEntryFigmentator
 from figmentator.models.figment import FigmentContext
 from figmentator.models.suggestion import SuggestionType
+from openai.error import RateLimitError
 
 from data.preprocess import get_tokenizer
 from data.preprocess.gpt3 import EntryInfo, Preprocessor, ProcessedStory
@@ -33,7 +34,9 @@ class GPT3Figmentator(CharacterEntryFigmentator):
         super().__init__(suggestion_type)
 
         self.preprocessor: Preprocessor
-        self.logit_bias: Dict[str, int]
+        self.generate_args: Dict[str, Any]
+        self.max_entry_length: int
+        self.default_retry_time: int
 
     def startup(self, properties: Optional[Dict[str, Any]] = None) -> bool:
         """
@@ -54,6 +57,8 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             # Load the arguments for the figmentator
             disallowed = properties.get("disallowed", [])
             generate_args = properties.get("generate_args", {})
+
+            self.default_retry_time = properties.get("default_retry_time", 2)
         except Exception:  # pylint:disable=broad-except
             logger.error(traceback.format_exc())
             return False
@@ -138,6 +143,9 @@ class GPT3Figmentator(CharacterEntryFigmentator):
         """
         Should the text be filtered, see https://beta.openai.com/docs/engines/content-filter
         """
+        if not text:
+            return False
+
         try:
             response = openai.Completion.create(
                 engine="content-filter-alpha",
@@ -208,12 +216,16 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             response = openai.Completion.create(
                 user=user, prompt=processed[0]["prompt"], **self.generate_args
             )
-        except Exception as e:
+            sample = response["choices"][0]["text"]
+        except RateLimitError as rle:
+            wait_time = int(rle.headers.get("Retry-After", self.default_retry_time))
+            logger.warning("Hit rate limit. Waiting %d seconds", wait_time)
+            sample = ""
+        except openai.OpenAIError as e:
             logger.error(str(e))
             return [None]
 
         logger.debug(str(response))
-        sample = response["choices"][0]["text"]
         if self.should_filter(sample, user):
             logger.warning("filtering %s", sample)
             return [None]

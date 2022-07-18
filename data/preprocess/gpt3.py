@@ -59,9 +59,9 @@ class SpecialToken(str, Enum):
     addition_summary = "#SCENE CONTINUATION SUMMARY\n"
     conclusion_summary = "#SCENE CONCLUSION SUMMARY\n"
 
-    # The scene entry we want to learn to generate. Use a short string to appease openai's
-    # fine tuning data prepration tool
-    current_move = "#AND NOW\n"
+    # Use a short strings to appease openai's fine tuning data prepration tool
+    current_move = "#AND NOW\n"  # entry we want to learn to generate.
+    edited_move = "#REVISED\n"  # edit we want to learn to generate.
 
     def __str__(self):
         """
@@ -988,6 +988,45 @@ class Preprocessor:
             summary=summary,
         )
 
+    def process_edit(
+        self,
+        story: Dict[str, Any],
+        generated: Dict[str, Any],
+        finalized: Dict[str, Any],
+    ) -> Optional[EntryInfo]:
+        """Process an edit for the given story"""
+        scenes = story.get("scenes")
+        if not scenes or not isinstance(scenes, Sequence):
+            # This would only happen with malformed data
+            return None
+
+        establishment_id: Optional[str] = None
+        entries = scenes[-1].get("entries", [])
+        if not entries or not isinstance(entries, Sequence):
+            return None
+
+        for entry in reversed(entries):
+            entry_id = entry.get("seq_id", None)
+            entry_format = entry.get("format")
+            if entry_format == "establishment":
+                establishment_id = entry_id
+                break
+
+        finalized_id = finalized.get("seq_id", None)
+        generated_id = generated.get("seq_id", None)
+        if finalized_id is None or generated_id is None:
+            # This would only happen with malformed data
+            return None
+
+        # Compute the checksum for the entry
+        generated_checksum = self.checksum_entry(generated, generated_id)
+        finalized_checksum = self.checksum_entry(finalized, finalized_id)
+        return self.process_entry(
+            generated, establishment_id or generated_id, generated_checksum
+        ), self.process_entry(
+            finalized, establishment_id or finalized_id, finalized_checksum
+        )
+
     def process_story_file(self, filename: str) -> Optional[ProcessedStory]:
         """
         Wrapper around process_story that takes in a filename of a story to process
@@ -1166,6 +1205,53 @@ class Preprocessor:
 
         return [story.entries[entry_id] for entry_id in history]
 
+    def compile_final_entry(
+        self,
+        entry: EntryInfo,
+        header: SpecialToken,
+        strength: int = 1,
+        add_suffix: bool = True,
+        max_length: Optional[int] = None,
+        preferred_length: Optional[int] = None,
+    ) -> Segment:
+        """
+        Compile the final entry
+        """
+        # Need to specially format the entry we want to model for completions
+        # 1. It must begin with a unique prefix (actually becomes the suffix of
+        # the GPT-3 prompt)
+        final_entry = []
+        final_entry.append(
+            Segment(self.encode_special_token(header), fixed_length=True)
+        )
+
+        # 2. Add a space after the prefix since GPT-3 really wants completions
+        # to begin with a space
+        final_entry.append(Segment(self.encode_token(" "), fixed_length=True))
+
+        # There might not be any text for a completion
+        if entry.text[1]:
+            # 3. We want to trim the end of the text to a maximum length without
+            # any ellipsis (no use in modeling more completion tokens than our max
+            # generation length at inference)
+            final_entry.append(
+                entry.text[1].clone(
+                    trim=Trim.end,
+                    ellipsis=tuple(),
+                    max_length=max_length,
+                    preferred_strength=strength,
+                    preferred_length=preferred_length or self.preferred_entry_length,
+                )
+            )
+
+            # Only include the suffix if specified and there is text. Otherwise
+            # we are encoding a completion
+            if add_suffix:
+                # 4. It must end with a unique suffix
+                final_entry.append(Segment(self.encode_token("$$$"), fixed_length=True))
+
+        return Segment(final_entry, atomic=True)
+
     def compile_entries(
         self, entries: Sequence[EntryInfo], add_suffix: bool = True
     ) -> Segment:
@@ -1185,58 +1271,49 @@ class Preprocessor:
                         )
                     )
                 else:
-                    # Need to specially format the entry we want to model for completions
-                    # 1. It must begin with a unique prefix (actually becomes the suffix of
-                    # the GPT-3 prompt)
-                    final_entry = []
-                    final_entry.append(
-                        Segment(
-                            self.encode_special_token(SpecialToken.current_move),
-                            fixed_length=True,
+                    compiled.append(
+                        self.compile_final_entry(
+                            entry_info,
+                            SpecialToken.current_move,
+                            strength=i,
+                            add_suffix=add_suffix,
+                            max_length=self.max_entry_length,
                         )
                     )
 
-                    # 2. Add a space after the prefix since GPT-3 really wants completions
-                    # to begin with a space
-                    final_entry.append(
-                        Segment(
-                            self.encode_token(" "),
-                            fixed_length=True,
+        return Segment(compiled)
+
+    def compile_edit_entries(self, entries: Sequence[EntryInfo]) -> Segment:
+        """
+        Compile the list of entries into a single Segment
+        """
+        compiled = []
+        for i, entry_info in enumerate(entries, 1):
+            compiled.append(entry_info.summary.clone())
+
+            if entry_info.summary != entry_info.text:
+                if i < len(entries):
+                    compiled.append(
+                        entry_info.text.clone(
+                            preferred_strength=i,
+                            preferred_length=self.preferred_entry_length,
                         )
                     )
-
-                    # There might not be any text for a completion
-                    if entry_info.text[1]:
-                        # 3. We want to trim the end of the text to a maximum length without
-                        # any ellipsis (no use in modeling more completion tokens than our max
-                        # generation length at inference)
-                        final_entry.append(
-                            entry_info.text[1].clone(
-                                trim=Trim.end,
-                                preferred_strength=i,
-                                preferred_length=self.preferred_entry_length,
-                                max_length=self.max_entry_length,
-                                ellipsis=tuple(),
-                            )
+                else:
+                    compiled.append(
+                        self.compile_final_entry(
+                            entry_info,
+                            SpecialToken.current_move,
+                            strength=i,
+                            add_suffix=False,
+                            preferred_length=entry_info.text.unconstrained_num_tokens,
                         )
-
-                        # Only include the suffix if specified and there is text. Otherwise
-                        # we are encoding a completion
-                        if add_suffix:
-                            # 4. It must end with a unique suffix
-                            final_entry.append(
-                                Segment(
-                                    self.encode_token("$$$"),
-                                    fixed_length=True,
-                                )
-                            )
-
-                    compiled.append(Segment(final_entry, atomic=True))
+                    )
 
         return Segment(compiled)
 
     def get_move(
-        self, story: ProcessedStory, entry_info: EntryInfo, add_suffix: bool = False
+        self, story: ProcessedStory, entry_info: EntryInfo, add_suffix: bool = True
     ) -> Segment:
         """
         Extracts the context for a given entry
@@ -1267,6 +1344,39 @@ class Preprocessor:
                 ),
                 self.compile_entries(entries, add_suffix=add_suffix),
             )
+        )
+
+    def get_edit(
+        self,
+        story: ProcessedStory,
+        generated: EntryInfo,
+        finalized: EntryInfo,
+        add_suffix: bool = True,
+    ) -> Segment:
+        """
+        Extracts the context for a given entry
+        """
+        character_id = finalized.character_id
+        character_info = story.characters.get(character_id)
+        if not character_info:
+            raise KeyError(
+                f"Cannot find character {character_id} for story {story.game_id}!"
+            )
+
+        history = self.collect_history(story, character_info, finalized)
+        entries = history + [generated]
+        return (
+            Segment(
+                (
+                    # Allow equal strength to character info as the main entry we are modeling
+                    character_info.summary.clone(
+                        preferred_strength=len(entries),
+                        preferred_length=self.preferred_entry_length,
+                    ),
+                    self.compile_edit_entries(entries),
+                )
+            ),
+            self.compile_final_entry(finalized, SpecialToken.edited_move),
         )
 
     def decode(self, segment: Segment) -> str:

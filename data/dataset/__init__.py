@@ -5,11 +5,27 @@ import argparse
 import logging
 import os
 import random
+import re
 
 from data.preprocess import AVAILABLE_TOKENIZERS, SPLIT_NAMES
 
 from .gpt2 import StoriumDataset as GPT2StoriumDataset
 from .gpt3 import StoriumDataset as GPT3StoriumDataset
+from .gpt3edits import StoriumDataset as GPT3StoriumEditsDataset
+
+
+def _default_kwargs(args):
+    """Return the default dataset and preprocess kwargs"""
+    dataset_kwargs = {"cache_dir": args.cache_dir}
+    preprocessor_kwargs = {
+        "force": args.force,
+        "history": args.history,
+        "max_length": args.max_length,
+        "character_history": args.character_history,
+        "preferred_entry_length": args.preferred_entry_length,
+    }
+
+    return dataset_kwargs, preprocessor_kwargs
 
 
 def perform_preprocessing(args):
@@ -18,40 +34,51 @@ def perform_preprocessing(args):
     """
     random.seed(args.seed)
 
-    for split in SPLIT_NAMES:
-        with open(os.path.join(args.data_dir, f"{split}_filenames.txt"), "rt") as file:
-            filenames = [
-                os.path.join(args.data_dir, filename).strip()
-                for filename in file.readlines()
-            ]
+    if args.dataset == "gpt3edits":
+        dataset_kwargs, preprocessor_kwargs = _default_kwargs(args)
+        dataset_kwargs["max_tokens"] = args.max_tokens
+        dataset_kwargs["min_completion_length"] = args.min_completion_length
 
-        dataset_kwargs = {"cache_dir": args.cache_dir}
-        preprocessor_kwargs = {
-            "force": args.force,
-            "history": args.history,
-            "max_length": args.max_length,
-            "character_history": args.character_history,
-            "preferred_entry_length": args.preferred_entry_length,
-        }
-        if args.dataset == "gpt2":
-            dataset_cls = GPT2StoriumDataset
-            preprocessor_kwargs["naive_layout"] = args.naive_layout
-        elif args.dataset == "gpt3":
-            dataset_cls = GPT3StoriumDataset
-            if split == "train":
-                # Only filter training dataset
-                dataset_kwargs["max_tokens"] = args.max_tokens
-                dataset_kwargs["min_completion_length"] = args.min_completion_length
-        else:
-            raise ValueError(f"Unknown dataset type: {args.dataset}")
+        model_filter = re.compile(args.model_filter)
+        dataset = GPT3StoriumEditsDataset(
+            model_filter, args.tokenizer, **dataset_kwargs
+        )
+        dataset.process(
+            args.edits_file,
+            args.output_dir,
+            max_edit_length=args.max_edit_length,
+            **preprocessor_kwargs,
+        )
+    else:
+        for split in SPLIT_NAMES:
+            with open(
+                os.path.join(args.data_dir, f"{split}_filenames.txt"), "rt"
+            ) as file:
+                filenames = [
+                    os.path.join(args.data_dir, filename).strip()
+                    for filename in file.readlines()
+                ]
 
-        dataset = dataset_cls(split, args.tokenizer, **dataset_kwargs)
-        dataset.process(filenames, args.output_dir, **preprocessor_kwargs)
+            dataset_kwargs, preprocessor_kwargs = _default_kwargs(args)
+            if args.dataset == "gpt2":
+                dataset_cls = GPT2StoriumDataset
+                preprocessor_kwargs["naive_layout"] = args.naive_layout
+            elif args.dataset == "gpt3":
+                dataset_cls = GPT3StoriumDataset
+                if split == "train":
+                    # Only filter training dataset
+                    dataset_kwargs["max_tokens"] = args.max_tokens
+                    dataset_kwargs["min_completion_length"] = args.min_completion_length
+            else:
+                raise ValueError(f"Unknown dataset type: {args.dataset}")
 
-        if logging.getLogger().getEffectiveLevel() <= logging.INFO:
-            dataset.load(args.output_dir)
+            dataset = dataset_cls(split, args.tokenizer, **dataset_kwargs)
+            dataset.process(filenames, args.output_dir, **preprocessor_kwargs)
 
-        logging.info("%s %s", split, dataset.stats_str())
+            if logging.getLogger().getEffectiveLevel() <= logging.INFO:
+                dataset.load(args.output_dir)
+
+            logging.info("%s %s", split, dataset.stats_str())
 
 
 def define_preprocess_args(
@@ -62,9 +89,14 @@ def define_preprocess_args(
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=("gpt2", "gpt3"),
+        choices=("gpt2", "gpt3", "gpt3edits"),
         default="gpt2",
-        help="The dataset to preprocess (gpt2 or gpt3 version)",
+        help="The dataset to preprocess (gpt2, gpt3, or gpt3edits version)",
+    )
+    parser.add_argument(
+        "--edits-file",
+        type=str,
+        help="The path to Storium edits for finetuning",
     )
     parser.add_argument(
         "--tokenizer",
@@ -92,6 +124,12 @@ def define_preprocess_args(
         help="Max length for the story context + entry",
     )
     parser.add_argument(
+        "--max-edit-length",
+        type=int,
+        default=2048,
+        help="Max length for the finalized edit",
+    )
+    parser.add_argument(
         "--max-tokens",
         type=int,
         default=-1,
@@ -102,6 +140,12 @@ def define_preprocess_args(
         type=int,
         default=-1,
         help="Minimum entry completion length to consider for training (default no limit)",
+    )
+    parser.add_argument(
+        "--model-filter",
+        type=str,
+        default=".*",
+        help="Regex defining which models to accept (default '.*')",
     )
     parser.add_argument(
         "--preferred-entry-length",

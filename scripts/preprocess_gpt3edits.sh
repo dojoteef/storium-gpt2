@@ -8,9 +8,9 @@ set -e
 usage()
 {
   cat <<EOF
-USAGE: $0 [-h] [-f] [-d DATA_DIR] [-o OUTPUT_DIR] [-v]
+USAGE: $0 [-h] [-f] [-e EDITS_FILE] [-o OUTPUT_DIR] [-v]
 Options:
- -d             Data directory
+ -e             Edits file
  -f             Whether to force preprocessing
  -h             Show this help and exit
  -o             Output directory
@@ -20,14 +20,14 @@ EOF
 }
 
 # Defaults
-DATA_DIR=""
+EDITS_FILE=""
 OUTPUT_DIR=""
 VERBOSE=""
 FORCE=""
 
-while getopts 'd:fho:v' o; do
+while getopts 'e:fho:v' o; do
   case "$o" in
-    d)  DATA_DIR="$OPTARG";;
+    e)  EDITS_FILE="$OPTARG";;
     f)  FORCE="-f";;
     h)  usage 0;;
     o)  OUTPUT_DIR="$OPTARG";;
@@ -40,25 +40,9 @@ shift $((OPTIND - 1))
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PREPROCESSING_SCRIPT="$SCRIPT_DIR/../main.py"
 
-if [[ -z "$DATA_DIR" ]]; then
-  read -r -n 1 -p "No data directory specified. Use current directory '$PWD'? [Y/n] " USE_CURRENT_DIR; echo
-
-  if [[ "$USE_CURRENT_DIR" =~ [Nn] ]]; then
-    echo "No valid data directory specified, exiting."
-    exit 0
-  fi
-elif [[ ! -d "$DATA_DIR" ]]; then
-  read -r -n 1 -p "Output directory '$DATA_DIR' does not exist. Create it? [Y/n] " CREATE_DATA_DIR; echo
-
-  if [[ "$CREATE_DATA_DIR" =~ [Nn] ]]; then
-    echo "No valid data directory specified, exiting."
-    exit 0
-  fi
-
-  if ! mkdir -p "$DATA_DIR" 2> /dev/null; then
-    echo "Failed to create '$DATA_DIR'!"
-    exit 1
-  fi
+if [[ ! -f "$EDITS_FILE" ]]; then
+  echo "No valid edits file specified, exiting."
+  exit 1
 fi
 
 if [[ -z "$OUTPUT_DIR" ]]; then
@@ -87,7 +71,9 @@ fi
 # works. For example, it seems that sometimes it encodes "\n\n" as a single token, and other
 # times it encodes it as two tokens. Therefore to ensure we don't accidentally go over the max
 # 2048 tokens for a single example provided to GPT-3, we reduce the max example length a bit
-# to try to account for this slop.
-python "$PREPROCESSING_SCRIPT" "$VERBOSE" --data-dir "$DATA_DIR" --output-dir "$OUTPUT_DIR" preprocess \
-    --dataset gpt3 --history 2 --character-history 2 --max-length 2042 --max-tokens 20000000 \
-    --preferred-entry-length 256 --min-completion-length 100 $FORCE
+# to try to account for this slop. The largest GPT-3 model now supports 4000 tokens, so the
+# max edit length needs to be reduced a bit since it's not 4096 as expected
+python "$PREPROCESSING_SCRIPT" "$VERBOSE" --output-dir "$OUTPUT_DIR" preprocess \
+    --dataset gpt3edits --history 2 --character-history 2 --max-length 2042 --max-tokens 20000000 \
+    --preferred-entry-length 256 --max-edit-length 1946 $FORCE \
+    --model-filter gpt3 --edits-file "$EDITS_FILE"

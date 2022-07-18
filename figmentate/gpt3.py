@@ -8,12 +8,13 @@ from typing import Any, Dict, List, Optional
 
 import openai
 from figmentator.figment.base import CharacterEntryFigmentator
-from figmentator.models.figment import FigmentContext
+from figmentator.models.figment import FigmentContext, FigmentStatus
 from figmentator.models.suggestion import SuggestionType
 from openai.error import RateLimitError
 
 from data.preprocess import get_tokenizer
-from data.preprocess.gpt3 import EntryInfo, Preprocessor, ProcessedStory
+from data.preprocess.gpt3 import (EntryInfo, Preprocessor, ProcessedStory,
+                                  SpecialToken)
 
 # GPT-3 can process at most 2048 tokens
 MAX_LENGTH = 2048
@@ -35,6 +36,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
 
         self.preprocessor: Preprocessor
         self.generate_args: Dict[str, Any]
+        self.revise_args: Optional[Dict[str, Any]]
         self.max_entry_length: int
         self.default_retry_time: int
 
@@ -57,6 +59,7 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             # Load the arguments for the figmentator
             disallowed = properties.get("disallowed", [])
             generate_args = properties.get("generate_args", {})
+            revise_args = properties.get("revise_args", None)
 
             self.default_retry_time = properties.get("default_retry_time", 2)
         except Exception:  # pylint:disable=broad-except
@@ -73,7 +76,11 @@ class GPT3Figmentator(CharacterEntryFigmentator):
         generate_args["logit_bias"] = {
             str(t): -100 for s in disallowed for t in self.preprocessor.encode_token(s)
         }
+        if revise_args is not None:
+            revise_args["logit_bias"] = generate_args["logit_bias"]
+
         self.generate_args = generate_args
+        self.revise_args = revise_args
         logger.info("Successfully completed startup!")
 
         return True
@@ -111,6 +118,12 @@ class GPT3Figmentator(CharacterEntryFigmentator):
 
         logger.debug("returning %s", entry)
         return entry
+
+    def build_edit_prompt(self, prompt: str, generated: str) -> str:
+        """
+        Build the prompt for the GPT-3 revision model
+        """
+        return prompt + generated + "\n" + str(SpecialToken.edited_move) + " "
 
     def process(self, context: FigmentContext) -> Optional[Dict[str, Any]]:
         """
@@ -200,13 +213,13 @@ class GPT3Figmentator(CharacterEntryFigmentator):
 
         return output_label == "2"
 
-    def sample(self, processed: List[Dict[str, Any]]) -> List[Optional[str]]:
+    def sample(self, processed: Dict[str, Any]) -> Optional[str]:
         """
         This method generates a batch of character entry text
         """
         logger.debug("Sampling continuation")
         if not processed:
-            return []
+            return None
 
         if len(processed) > 1:
             raise ValueError("This figmentator does not support batching!")
@@ -223,11 +236,86 @@ class GPT3Figmentator(CharacterEntryFigmentator):
             sample = ""
         except openai.OpenAIError as e:
             logger.error(str(e))
-            return [None]
+            return None
 
         logger.debug(str(response))
         if self.should_filter(sample, user):
             logger.warning("filtering %s", sample)
-            return [None]
+            return None
 
-        return [sample]
+        return sample
+
+    def sample_edit(self, processed: Dict[str, Any], initial_sample: str) -> str:
+        """
+        This method samples an edit for the given suggestion
+        """
+        if self.revise_args is None:
+            return initial_sample
+
+        user = processed["user"]
+        try:
+            response = openai.Completion.create(
+                user=user,
+                prompt=self.build_edit_prompt(processed["prompt"], initial_sample),
+                **self.revise_args,
+            )
+            revised = response["choices"][0]["text"]
+            logger.debug(str(response))
+
+            if self.should_filter(revised, user):
+                logger.warning("filtering %s", revised)
+                return initial_sample
+        except (RateLimitError, openai.OpenAIError) as e:
+            revised = initial_sample
+            logger.error(str(e))
+
+        return revised
+
+    def figmentate(self, contexts: List[FigmentContext]) -> List[FigmentContext]:
+        """
+        This method should generate a figment for each context in the list.
+
+        It returns a list of scene entries with the suggestion filled in or
+        None.
+        """
+        if len(contexts) > 1:
+            raise ValueError("This figmentator does not support batching!")
+
+        context = contexts[0]
+        segment = self.validate(context)
+        if not segment:
+            context.status = FigmentStatus.failed
+            return contexts
+
+        processed = self.process(context)
+        if processed is None:
+            context.status = FigmentStatus.failed
+            return contexts
+
+        # Make sure we filter profanity that the model might generate
+        sample = self.sample(processed)
+        if not sample:
+            context.status = FigmentStatus.failed
+            return contexts
+
+        sample = self.profanity_filter(sample)
+        if context.status == FigmentStatus.failed:
+            return contexts
+
+        assert context.range is not None
+        assert context.entry.description is not None
+
+        context.entry.description += sample
+        chunks = context.range.unit.chunk(context.entry.description)
+
+        # Mark the status as completed or partially completed
+        if context.range.is_finite() and len(chunks) > segment.stop:
+            context.status = FigmentStatus.completed
+
+            if self.revise_args is not None:
+                context.entry.figment_state = {"initial_sample": sample}
+                context.entry.description = self.sample_edit(processed, sample)
+        else:
+            context.status = FigmentStatus.partial
+
+        return contexts
